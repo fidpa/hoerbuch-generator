@@ -1,0 +1,86 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python:
+    name: Python (ruff + Syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Fest gepinnt: Eine neue Ruff-Version ändert ihre Regeln und machte die
+      # Prüfung sonst zu einem beweglichen Ziel. Die Auswahl steht in ruff.toml.
+      - name: Install ruff
+        run: pip install ruff==0.16.0
+
+      - name: Run ruff
+        run: ruff check .
+
+      # Die Werkzeuge importieren MLX, das es nur auf macOS gibt. Auf einem
+      # Linux-Runner lässt sich deshalb nur die Syntax prüfen, nicht das Verhalten.
+      - name: Validate Python syntax
+        run: python -m compileall -q werkzeuge tests
+
+  hoerfassung:
+    name: Hörfassung (Test-PDF)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Die Hörfassung braucht nur PyMuPDF, die Vertonung (MLX) bleibt außen vor.
+      # Die Version kommt aus requirements.txt, damit sie nur dort steht.
+      - name: Install PyMuPDF
+        run: pip install "$(grep -E '^pymupdf==' requirements.txt)"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  shell:
+    name: Shell (shellcheck + Syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        run: shellcheck --severity=warning --shell=bash vorlesen.sh einrichten.sh
+
+      - name: Validate Bash syntax
+        run: |
+          bash -n vorlesen.sh
+          bash -n einrichten.sh
+
+  requirements:
+    name: Requirements gepinnt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Das README verspricht getestete Paketversionen. Ein Eintrag ohne == würde
+      # dieses Versprechen still brechen.
+      - name: Every requirement must be pinned with ==
+        run: |
+          if grep -vE '^\s*(#|$)' requirements.txt \
+             | grep -vE '^[A-Za-z0-9_.-]+==[0-9]'; then
+            echo "::error::requirements.txt enthält einen Eintrag ohne =="
+            exit 1
+          fi
+          echo "OK: alle Pakete exakt gepinnt"

@@ -1,0 +1,33 @@
+# Ruff-Konfiguration, bewusst ausdrücklich.
+#
+# Die Regelauswahl steht hier fest, weil die Standardauswahl von Ruff mit jeder
+# Version wächst; ein bloßes `ruff check` prüft sonst gegen ein bewegliches Ziel.
+# Gesucht werden echte Fehler (Syntax, undefinierte Namen, ungenutzte Importe),
+# kein Umformatieren. Deshalb gibt es keine `ruff format`-Prüfung.
+#
+# BLE (pauschales `except Exception`) fehlt absichtlich: pdf_zu_text.py fängt
+# beim Lesen beschädigter oder ungewöhnlicher PDFs jede Ausnahme ab und fällt
+# auf einen einfacheren Weg zurück.
+
+target-version = "py310"
+line-length = 100
+
+[lint]
+select = [
+    "E4",  # pycodestyle: Importe
+    "E7",  # pycodestyle: Anweisungen
+    "E9",  # pycodestyle: Laufzeit- und Syntaxfehler
+    "F",   # pyflakes
+    "W",   # pycodestyle: Warnungen
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "EXE", # Shebang und Dateirechte müssen zusammenpassen
+    "RUF",
+]
+ignore = [
+    # Die Hörfassung sucht und ersetzt typografische Zeichen (Halbgeviertstrich,
+    # geschütztes Leerzeichen) absichtlich. Die Zeichen sind dort Gegenstand des
+    # Codes, kein Tippfehler.
+    "RUF001",
+]

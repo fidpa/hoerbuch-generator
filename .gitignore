@@ -1,0 +1,21 @@
+# Python-Umgebung, von einrichten.sh angelegt
+.venv/
+__pycache__/
+*.pyc
+
+# Ergebnisse und Zwischenstände von Testläufen
+*.mp3
+*.log
+*_hoerfassung.txt
+*.stuecke/
+
+# Linter-Cache
+.ruff_cache/
+
+# Private Arbeitsanweisungen und Entwürfe, nicht für das öffentliche Repo
+CLAUDE.md
+LINKEDIN_POST.md
+.claude/
+
+# OS
+.DS_Store

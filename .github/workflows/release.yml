@@ -1,0 +1,64 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GitHub-Release veröffentlichen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Abschnitt aus dem Changelog holen
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          HEADING="## [${VERSION}]"
+
+          # Genau ein Abschnitt darf diese Version tragen. Zwei entstehen, wenn eine
+          # zweite Sitzung in denselben Changelog schreibt, und der Release-Text
+          # enthielte dann beide. Der Test muss wörtlich UND am Zeilenanfang
+          # verankert sein, deshalb dasselbe index($0,h)==1 wie beim Herausschneiden:
+          # Ein regulärer Ausdruck liest die Punkte der Version als Platzhalter, und
+          # ein unverankerter Vergleich zählt eine Zeile mit, die eine Überschrift
+          # nur zitiert.
+          [ "$(awk -v h="$HEADING" 'index($0,h)==1' CHANGELOG.md | wc -l)" = 1 ] \
+            || { echo "Erwartet genau einen Abschnitt '$HEADING' in CHANGELOG.md"; exit 1; }
+
+          # !p schützt den Anker: Ohne es greift die Regel bei einer zweiten
+          # Überschrift derselben Version erneut, setzt p neu und überspringt den
+          # Ausstieg, und beide Abschnitte landen in einem Text. Die Stoppregeln
+          # kommen danach, also muss der Anker das Duplikat selbst ablehnen.
+          awk -v head="$HEADING" '
+            !p && index($0, head) == 1 { p=1; next }
+            /^## / { if (p) exit }
+            /^\[[0-9]/ { if (p) exit }
+            p { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
+          test -s release-notes.md || { echo "Leerer Release-Text für $VERSION"; exit 1; }
+
+          HEADLINE=$(awk -v head="$HEADING" '
+            index($0, head) == 1 {
+              if (match($0, /- [0-9]{4}-[0-9]{2}-[0-9]{2}: /)) {
+                print substr($0, RSTART + RLENGTH); exit
+              }
+            }
+          ' CHANGELOG.md)
+          if [ -n "$HEADLINE" ]; then
+            echo "title=v${VERSION}: ${HEADLINE}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Keine Schlagzeile in der Überschrift von ${VERSION}; Titel ist nur die Versionsnummer"
+            echo "title=v${VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: GitHub-Release anlegen
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.changelog.outputs.title }}
+          body_path: release-notes.md
