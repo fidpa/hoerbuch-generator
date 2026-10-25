@@ -137,8 +137,10 @@ Eingabe: .txt direkt | .md .docx .odt .epub über pandoc | .pdf über werkzeuge/
 | Beschriftungen aus Grafiken, die als Text mitkommen | „Input Layer an Hidden Layern“ | Satz löschen |
 | Eigennamen in Großbuchstaben | „LAION“ kam als „Leon“ heraus | probehalber vertonen und anhören, bei Bedarf nach Aussprache schreiben |
 | Aufzählung falsch erkannt | „Nummer 19: Jh.“ | richtigstellen |
+| Zusammengesetzte Wörter, deren zweiter Teil mit „ie“ beginnt | „Inkassodienstes“ kam als „Inkasso-di-enstes“ heraus | mit Bindestrich schreiben: „Inkasso-Dienstes“ |
+| Mehrere Geldbeträge mit Komma in einem Satz | bei „51,50 Euro, die Hälfte davon 25,75 Euro“ verhaspelte sich die Stimme | wie gesprochen schreiben: „51 Euro 50“ |
 
-Die Beispiele stammen aus den Testtexten. Bis auf „LAION“ korrigiert die Hörfassung genau diese Fälle inzwischen selbst, Grafik-Beschriftungen aber nur direkt vor einer Bildunterschrift. Aufzählungszeichen mitten im Text und doppelte Bildunterschriften korrigiert sie ebenfalls. Ähnliche Fälle meldet `pruefen.py` weiterhin. Bildunterschriften („Abbildung 2: …“) werden bewusst mitgelesen.
+Die ersten fünf Beispiele stammen aus den Testtexten, die letzten beiden aus dem Sprechtext eines Schulungsvideos. Bis auf „LAION“ und diese beiden korrigiert die Hörfassung genau diese Fälle inzwischen selbst, Grafik-Beschriftungen aber nur direkt vor einer Bildunterschrift. Aufzählungszeichen mitten im Text und doppelte Bildunterschriften korrigiert sie ebenfalls. Ähnliche Fälle meldet `pruefen.py` weiterhin. Bildunterschriften („Abbildung 2: …“) werden bewusst mitgelesen.
 
 Kürzel wie „DSGVO“ oder „LLM“ liest die Stimme ohne Hilfe als Buchstaben. Auch Prozentzeichen und Gedankenstriche liest sie richtig.
 

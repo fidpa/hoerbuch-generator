@@ -6,6 +6,16 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.1.2] - 2026-10-25: Zwei weitere Fälle zum Gegenhören
+
+### Geändert
+
+- **Tabelle „Hörfassung prüfen“ im README:** zwei Fälle, die die Hörfassung nicht selbst
+  korrigiert und die erst beim Anhören auffielen. Zusammengesetzte Wörter, deren zweiter
+  Teil mit „ie“ beginnt, klangen falsch („Inkassodienstes“ wurde „Inkasso-di-enstes“); mit
+  Bindestrich spricht die Stimme sie richtig. Bei mehreren Geldbeträgen mit Komma in einem
+  Satz verhaspelte sie sich; geschrieben wie gesprochen („51 Euro 50“) lief der Satz sauber.
+
 ## [0.1.1] - 2026-10-25: Gendersprache als generisches Maskulinum
 
 ### Geändert
@@ -37,5 +47,6 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.1.2]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.2
 [0.1.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.1
 [0.1.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.0
