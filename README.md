@@ -22,7 +22,7 @@ Der Generator verbindet eine natürliche Stimme, die vollständig auf dem Mac l�
 ## Funktionen
 
 - **Natürliche Stimme, lokal:** Qwen3-TTS über MLX auf dem Grafikprozessor des Macs. Englische Fachbegriffe im deutschen Text spricht die Stimme englisch aus.
-- **Hörfassung für PDFs:** lässt Inhaltsverzeichnis, Fußnoten, Seitenzahlen, Literaturliste und Internetadressen weg, schreibt Abkürzungen, Datumsangaben und Ordnungszahlen aus (`z. B.`, `vgl. S. 8-15`, `§ 2 Abs. 1`, `25.05.2018`) und liest Tabellen als Sätze.
+- **Hörfassung für PDFs:** lässt Inhaltsverzeichnis, Fußnoten, Seitenzahlen, Literaturliste und Internetadressen weg, schreibt Abkürzungen, Datumsangaben und Ordnungszahlen aus (`z. B.`, `vgl. S. 8-15`, `§ 2 Abs. 1`, `25.05.2018`) und liest Tabellen als Sätze. Gendersprache liest sie im generischen Maskulinum: Aus „Kund*innen“ wird „Kunden“, aus „jede*r“ „jeder“. Ausgeschriebene Paarformen wie „Kolleginnen und Kollegen“ bleiben, wie sie dastehen.
 - **Zwei Stimmen im Repo:** `erzaehler` (Hörbuch-Erzähler, mittlere Tonlage, Standard) und `dozent` (engagierter Dozent, deutlich tiefer). Beide sind künstlich erzeugt und gehören keiner echten Person. Eigene Stimmen entstehen aus einer Aufnahme von 10 bis 20 Sekunden.
 - **Leisere Atemzüge:** Die künstliche Stimme atmet hörbar ein. Ein darauf trainiertes Erkennungsmodell findet die Atemzüge und senkt sie um 18 dB ab, ohne etwas herauszuschneiden.
 - **Prüfung vorab:** `werkzeuge/pruefen.py` zeigt Stellen, die meist Nacharbeit brauchen, und schätzt Länge und Rechenzeit.

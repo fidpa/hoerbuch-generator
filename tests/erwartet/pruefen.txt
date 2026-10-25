@@ -1,4 +1,4 @@
 
-=== beispiel_hoerfassung.txt: 180 Wörter
+=== beispiel_hoerfassung.txt: 192 Wörter
 Hörbuch etwa 1 min bei Tempo 1,2, Rechenzeit etwa 1 min (M4 Pro; ältere Chips langsamer)
 Kürzel (Anzahl): PDF 1, LIBRIVOX 1

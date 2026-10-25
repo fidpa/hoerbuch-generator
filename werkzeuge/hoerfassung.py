@@ -22,8 +22,12 @@ Was passiert:
     - Weggelassen: Verzeichnisse, Glossar, Literaturverzeichnis, Fussnoten,
       Seitenmarken, URLs. Vom Deckblatt bleiben Titelzeilen.
     - Ausgeschrieben: Abkuerzungen ("z. B.", "vgl.", "sog.", "i. V. m.",
-      "§ 2 Abs. 1"), Daten und Ordnungszahlen, Genderstern,
-      Schraegstriche, Pfeile. Jeder Abkuerzungspunkt waere sonst eine Satzpause.
+      "§ 2 Abs. 1"), Daten und Ordnungszahlen, Schraegstriche, Pfeile. Jeder
+      Abkuerzungspunkt waere sonst eine Satzpause.
+    - Gendersprache als generisches Maskulinum: "Kund*innen", "Nutzer:innen",
+      "LehrerInnen", "Lehrer/-innen", "jede*r", "der*die" werden "Kunden", "Nutzer",
+      "Lehrer", "jeder", "der"; mit Fallendung nach dem Artikel ("mit den Lehrern",
+      "einen Kollegen"). Ausgeschriebene Paarformen bleiben, wie sie dastehen.
     - Buchstabiert: Akronyme, die espeak als Wort liest ("KI" -> "Kii", "EU" -> "Eu").
     - Umschrieben: englische Fachbegriffe, die espeak nach deutschen Regeln liest
       ("Chatbot", "Bias", "Compliance"); weitere Woerter deckte fuer Piper ein eigenes
@@ -61,10 +65,13 @@ die beide Modelle an derselben Stelle machen, liegen im Audio.
 Alle Ersatzschreibungen sind mit `espeak-ng -v de -q -x "Wort"` geprueft, die
 wichtigsten zusaetzlich per Synthese und Ruecktranskription (Whisper).
 
-Version: 1.2.1
-Date: 2026-10-24
+Version: 1.3.0
+Date: 2026-10-25
 
 Changelog:
+    v1.3.0 (2026-10-25): Gendersprache als generisches Maskulinum, allgemeine Regel fuer
+                         alle Genderzeichen und Binnen-I statt Doppelnennung fuer neun
+                         feste Woerter
     v1.2.1 (2026-10-24): Ordnungszahl vor dem Monat mit Endung nach dem Wort davor
                          ("Stand: erster Oktober", "der erste Januar"), bisher immer "-en"
     v1.2.0 (2026-10-24): --engine qwen ohne espeak-Lautschrift, Satzteilung und
@@ -287,19 +294,91 @@ _QWEN_EXPAND = [
 ]
 _ENGINE = "piper"  # setzt main() aus --engine
 
-# Genderstern: Doppelnennung (Formen aus den Skripten, weitere bei Bedarf ergaenzen)
-_GENDER = {
-    "Kund*innen": "Kundinnen und Kunden",
-    "Schüler*innen": "Schülerinnen und Schüler",
-    "Mandatsträger*innen": "Mandatsträgerinnen und Mandatsträger",
-    "Schriftsteller*innen": "Schriftstellerinnen und Schriftsteller",
-    "Bürger*innen": "Bürgerinnen und Bürger",
-    "Leser*innen": "Leserinnen und Leser",
-    "Adressat*innen": "Adressatinnen und Adressaten",
-    "Kolleg*innen": "Kolleginnen und Kollegen",
-    "Hersteller*innen": "Herstellerinnen und Hersteller",
-    "jede*r": "jede und jeder",
+# Gendersprache: vorgelesen wird das generische Maskulinum ("Kund*innen" -> "Kunden").
+# Ausgeschriebene Paarformen ("Kolleginnen und Kollegen") bleiben, wie sie dastehen.
+_GZ = r"(?:\*|:|_|·|/-?|\()"  # Genderzeichen; "(" fuer "Lehrer(innen)"
+# Wortstaemme, deren maennliche Form sich nicht aus dem Stamm bilden laesst:
+# Stamm -> (Singular, Plural); greift auch als Ende eines Kompositums ("Rechtsanwält")
+_GENDER_IRREGULAR = {
+    "ärzt": ("arzt", "ärzte"), "anwält": ("anwalt", "anwälte"),
+    "bäuer": ("bauer", "bauern"), "köch": ("koch", "köche"),
+    "bischöf": ("bischof", "bischöfe"), "jüd": ("jude", "juden"),
+    "französ": ("franzose", "franzosen"), "beamt": ("beamte", "beamte"),
+    "freund": ("freund", "freunde"),
 }
+# Singularstaemme, die ohne Endung stehen ("Student*in" -> "Student"); sonst "-e"
+# ("Kolleg*in" -> "Kollege", "Psycholog*in" -> "Psychologe")
+_GENDER_SG_BARE = ("er", "el", "or", "ent", "ant", "at", "eur", "ist", "ier", "är", "it", "ot")
+# Woerter vor einem Plural im Dativ ("mit den Lehrer*innen" -> "mit den Lehrern")
+_DATIV_PL = r"(?:den|allen|vielen|beiden|einigen|mehreren|wenigen|diesen|jenen|solchen|" \
+            r"welchen|keinen|meinen|deinen|seinen|ihren|unseren|euren|Ihren)"
+
+
+def _gender_stem(stem: str, plural: bool) -> str:
+    """Maennliche Form zu einem Stamm vor dem Genderzeichen ("Lehrer", "Kolleg")."""
+    for key, (sg, pl) in _GENDER_IRREGULAR.items():
+        if stem.lower().endswith(key):
+            ersatz = pl if plural else sg
+            kopf = stem[:-len(key)]
+            return kopf + (ersatz.capitalize() if not kopf else ersatz)
+    if plural:
+        if stem.endswith(("er", "el", "en")):
+            return stem
+        return stem + ("e" if stem.endswith("eur") else "n" if stem.endswith("e") else "en")
+    return stem if stem.endswith(_GENDER_SG_BARE) else stem + "e"
+
+
+# Artikel vor einem Singular ausserhalb des Nominativs ("einen Kolleg*in" -> "einen Kollegen")
+_OBLIQUE_SG = r"(?:den|dem|des|einen|einem|eines|keinen|keinem|keines|diesen|diesem|dieses|" \
+              r"jeden|jedem|jedes|meinen|meinem|meines|seinen|seinem|seines|ihren|ihrem|ihres|" \
+              r"unseren|unserem|unseres|Ihren|Ihrem|Ihres)"
+# Schwach gebeugte Endungen: "den Studenten", "des Kollegen" (sonst "des Lehrers")
+_WEAK_SG = ("e", "ent", "ant", "ist", "at", "ot")
+
+
+def _gender_singular(m: re.Match) -> str:
+    wort = _gender_stem(m.group(2), plural=False)
+    artikel = (m.group(1) or "").split()
+    if artikel:
+        if wort.endswith(_WEAK_SG):
+            wort += "n" if wort.endswith("e") else "en"
+        elif artikel[0] in {"des", "eines", "keines", "dieses", "jedes", "meines", "seines",
+                            "ihres", "unseres", "Ihres"}:
+            wort += "s"
+    return wort
+
+
+def _gender_plural(m: re.Match) -> str:
+    if m.group(2).endswith("en"):
+        return m.group(0)  # kein Personenstamm: "Außen/innen"
+    wort = _gender_stem(m.group(2), plural=True)
+    if m.group(1) and not wort.endswith("n"):
+        wort += "n"  # Dativ Plural
+    return wort
+
+
+def generic_masculine(text: str) -> str:
+    """Gendersprache in das generische Maskulinum umsetzen."""
+    # Artikel und Pronomen: "der*die", "die/der" -> "der"; "jede*r" -> "jeder"
+    t = re.sub(rf"\b(?:der{_GZ}die|die{_GZ}der)\b", "der", text)
+    t = re.sub(rf"\b(?:Der{_GZ}[Dd]ie|Die{_GZ}[Dd]er)\b", "Der", t)
+    t = re.sub(rf"\b(des|dem|den){_GZ}(?:der|die)\b", r"\1", t)
+    t = re.sub(rf"\b(er|Er){_GZ}sie\b|\b(?:sie{_GZ}er)\b", lambda m: m.group(1) or "er", t)
+    t = re.sub(rf"\b(\w+e){_GZ}r\)?(?!\w)", r"\1r", t)          # jede*r, keine:r, jede(r)
+    t = re.sub(rf"\b(eine){_GZ}n\)?(?!\w)", r"\1n", t)           # eine*n
+    t = re.sub(rf"\b([Ee]in|[Kk]ein|[Mm]ein|[Ss]ein|[Ii]hr|[Uu]nser){_GZ}e\)?(?!\w)", r"\1", t)
+    # Plural: "Lehrer*innen", "Ärzt/-innen", "Lehrer(innen)", Binnen-I "LehrerInnen"
+    dativ = rf"(\b{_DATIV_PL}\s+(?:[a-zäöüß]+en\s+){{0,2}})?"
+    t = re.sub(rf"{dativ}\b([A-ZÄÖÜ][\wäöüß-]*?[a-zäöüß]){_GZ}innen\)?(?!\w)",
+               lambda m: (m.group(1) or "") + _gender_plural(m), t)
+    t = re.sub(rf"{dativ}\b([A-ZÄÖÜ][\wäöüß-]*?[a-zäöüß])Innen\b",
+               lambda m: (m.group(1) or "") + _gender_plural(m), t)
+    # Singular: "Student*in", "Kolleg:in"; Binnen-I nur im Plural, sonst traefe es
+    # "LinkedIn" und "CheckIn"
+    obl = rf"(\b{_OBLIQUE_SG}\s+(?:[a-zäöüß]+en\s+){{0,2}})?"
+    return re.sub(rf"{obl}\b([A-ZÄÖÜ][\wäöüß-]*?[a-zäöüß]){_GZ}in\)?(?!\w)",
+                  lambda m: (m.group(1) or "") + _gender_singular(m), t)
+
 
 # Englische Fachbegriffe, die espeak nach deutschen Regeln liest ("Chatbot" ->
 # "Schatbot", "Bias" -> "Bi-as") oder auf englische Laute umschaltet, die das
@@ -475,8 +554,7 @@ def speakable(text: str) -> str:
     t = re.sub(r"(\d)([A-ZÄÖÜ][a-zäöü])", r"\1 \2", t)  # "Abs. 3ProdHaftG"
     t = _URL_RE.sub("", t)
     t = re.sub(r"\b(abrufbar|verfügbar)\s+(unter|hier)?\s*:?\s*(?=[,.;)]|$)", "", t)
-    for k, v in _GENDER.items():
-        t = t.replace(k, v)
+    t = generic_masculine(t)
     # Aufzaehlungszeichen mitten im Absatz: wie ein Komma lesen, nach Satzende und
     # Bindewort ("… Aufsicht sowie • eine …") entfallen
     t = re.sub(r"(?<=[.:;!?])\s*[•◦▪➢►✓]\s+", " ", t)
@@ -838,7 +916,7 @@ Beispiele:
                     help="Ausgabedatei (nur bei genau einer Eingabe; Default <name>_hoerfassung.txt)")
     ap.add_argument("--engine", choices=["piper", "qwen"], default="qwen",
                     help="Ziel-Sprachausgabe (Default qwen); piper mit espeak-Lautschrift")
-    ap.add_argument("--version", action="version", version="%(prog)s 1.2.1")
+    ap.add_argument("--version", action="version", version="%(prog)s 1.3.0")
     args = ap.parse_args()
     global _ENGINE
     _ENGINE = args.engine

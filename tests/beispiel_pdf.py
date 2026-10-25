@@ -51,14 +51,15 @@ SEITE_3 = """
 <h1>1 Einleitung</h1>
 <p>Das Medienarchiv sammelt seit dem 25.05.2018 Vorträge und Bücher aus der
 gesamten EU.<sup>1</sup> Viele liegen nur als Text vor, z. B. als Abschrift
-eines Vortrags oder als PDF eines vergriffenen Buchs.</p>
+eines Vortrags oder als PDF eines vergriffenen Buchs. Das Heft richtet sich an
+alle Kolleginnen und Kollegen im Team.</p>
 <h1>2 Vom Text zum Hörbuch</h1>
 <h2>2.1 Auswahl der Texte</h2>
 <p>Nach § 2 Abs. 1 der Satzung i. V. m. Nr. 4 der Archivordnung entscheidet die
 sog. Redaktion über die Auswahl (vgl. S. 8-15). Die Mitgliederversammlung hat
 das am 3. Oktober bestätigt. Stichtag ist der 1. Januar 2027.</p>
 <ul>
-<li>Kolleg*innen bekommen den Text vorab, und</li>
+<li>Sprecher*innen bekommen den Text von den Redakteur:innen vorab, und</li>
 <li>die Redaktion hört jede Aufnahme gegen.</li>
 </ul>
 <p>Die Hinweise aus Teil III des Leitfadens gelten für alle Texte, die das
