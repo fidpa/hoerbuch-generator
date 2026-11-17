@@ -9,7 +9,7 @@ Usage:
 
 Was passiert:
     - Stimme: Klon einer Referenzaufnahme stimmen/NAME.wav (gesprochener Text in
-      NAME.txt), Default "erzaehler", Alternative "dozent". Die Referenzen stammen aus
+      NAME.txt), Default "erzaehler"; vorlesen.sh -l zeigt alle. Die Referenzen stammen aus
       dem VoiceDesign-Modell; Beschreibung und Rezept stehen in der README.
       Klonen statt Beschreibung, weil VoiceDesign die Stimme je Textstueck neu
       wuerfelt und bei langen Texten Saetze ausliess (Test vom 23.10.2026).

@@ -6,6 +6,25 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.2.0] - 2026-11-17: Zwei weitere Stimmen für Andacht und Marketing
+
+### Hinzugefügt
+
+- **Stimme `andacht`:** ruhiger, besinnlicher Sprecher für Andachten und Predigten, wie
+  `erzaehler` und `dozent` mit VoiceDesign aus einer Beschreibung erzeugt. Die Beschreibung steht im
+  README unter „Eigene Stimme“.
+- **Stimme `marketing`:** freundlicher Gesprächston mit Du-Ansprache für kurze Erklär- und
+  Produktvideos, empfohlen mit Tempo 1.1, ebenfalls mit VoiceDesign erzeugt. Beschreibung und
+  ein Hinweis, dass sich das Modell nicht verlässlich an das Geschlecht in der Beschreibung
+  hält, stehen im README unter „Eigene Stimme“.
+- **Tabelle „Hörfassung prüfen“:** Bibelstellen wie „Jesaja 55,8–9“ las die Stimme als
+  „fünfundfünfzig achtneun“; ausgeschrieben („Verse 8 bis 9“) stimmt es.
+
+### Geändert
+
+- **Anleitung für Claude:** Die Hörprobe läuft mit dem Erzähler und einer zweiten, zum Zweck
+  passenden Stimme statt immer mit dem Dozenten.
+
 ## [0.1.2] - 2026-10-25: Zwei weitere Fälle zum Gegenhören
 
 ### Geändert
@@ -47,6 +66,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.2.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.2.0
 [0.1.2]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.2
 [0.1.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.1
 [0.1.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.0

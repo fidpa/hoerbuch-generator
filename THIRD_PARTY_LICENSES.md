@@ -6,9 +6,9 @@ liegt oder erst bei der Einrichtung geholt wird.
 
 ## Im Repo enthalten
 
-### Die Stimmen `erzaehler` und `dozent`
+### Die Stimmen `erzaehler`, `dozent`, `andacht` und `marketing`
 
-`stimmen/erzaehler.wav` und `stimmen/dozent.wav` sind künstlich erzeugt, mit dem Modell
+`stimmen/erzaehler.wav`, `stimmen/dozent.wav`, `stimmen/andacht.wav` und `stimmen/marketing.wav` sind künstlich erzeugt, mit dem Modell
 [`mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit`](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit)
 (Qwen3-TTS, Apache 2.0) aus einer Textbeschreibung. Sie bilden keine echte Person nach.
 Die Beschreibungen stehen im README unter „Eigene Stimme“.

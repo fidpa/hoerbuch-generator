@@ -23,7 +23,7 @@ Der Generator verbindet eine natürliche Stimme, die vollständig auf dem Mac l�
 
 - **Natürliche Stimme, lokal:** Qwen3-TTS über MLX auf dem Grafikprozessor des Macs. Englische Fachbegriffe im deutschen Text spricht die Stimme englisch aus.
 - **Hörfassung für PDFs:** lässt Inhaltsverzeichnis, Fußnoten, Seitenzahlen, Literaturliste und Internetadressen weg, schreibt Abkürzungen, Datumsangaben und Ordnungszahlen aus (`z. B.`, `vgl. S. 8-15`, `§ 2 Abs. 1`, `25.05.2018`) und liest Tabellen als Sätze. Gendersprache liest sie im generischen Maskulinum: Aus „Kund*innen“ wird „Kunden“, aus „jede*r“ „jeder“. Ausgeschriebene Paarformen wie „Kolleginnen und Kollegen“ bleiben, wie sie dastehen.
-- **Zwei Stimmen im Repo:** `erzaehler` (Hörbuch-Erzähler, mittlere Tonlage, Standard) und `dozent` (engagierter Dozent, deutlich tiefer). Beide sind künstlich erzeugt und gehören keiner echten Person. Eigene Stimmen entstehen aus einer Aufnahme von 10 bis 20 Sekunden.
+- **Vier Stimmen im Repo:** `erzaehler` (Hörbuch-Erzähler, mittlere Tonlage, Standard), `dozent` (engagierter Dozent, deutlich tiefer), `andacht` (ruhiger, besinnlicher Sprecher für Andachten und Predigten) und `marketing` (freundlicher Gesprächston mit Du-Ansprache für kurze Erklär- und Produktvideos, empfohlen mit `-t 1.1`). Alle vier sind künstlich erzeugt und gehören keiner echten Person. Eigene Stimmen entstehen aus einer Aufnahme von 10 bis 20 Sekunden.
 - **Leisere Atemzüge:** Die künstliche Stimme atmet hörbar ein. Ein darauf trainiertes Erkennungsmodell findet die Atemzüge und senkt sie um 18 dB ab, ohne etwas herauszuschneiden.
 - **Prüfung vorab:** `werkzeuge/pruefen.py` zeigt Stellen, die meist Nacharbeit brauchen, und schätzt Länge und Rechenzeit.
 - **Fortsetzen nach Abbruch:** Fertige Stücke bleiben erhalten. Derselbe Aufruf macht nach einem Abbruch beim ersten fehlenden Stück weiter.
@@ -139,8 +139,9 @@ Eingabe: .txt direkt | .md .docx .odt .epub über pandoc | .pdf über werkzeuge/
 | Aufzählung falsch erkannt | „Nummer 19: Jh.“ | richtigstellen |
 | Zusammengesetzte Wörter, deren zweiter Teil mit „ie“ beginnt | „Inkassodienstes“ kam als „Inkasso-di-enstes“ heraus | mit Bindestrich schreiben: „Inkasso-Dienstes“ |
 | Mehrere Geldbeträge mit Komma in einem Satz | bei „51,50 Euro, die Hälfte davon 25,75 Euro“ verhaspelte sich die Stimme | wie gesprochen schreiben: „51 Euro 50“ |
+| Bibelstellen | „Jesaja 55,8–9“ kam als „fünfundfünfzig achtneun“ heraus | ausschreiben: „Jesaja 55, Verse 8 bis 9“, „Johannes 6, Vers 68“ |
 
-Die ersten fünf Beispiele stammen aus den Testtexten, die letzten beiden aus dem Sprechtext eines Schulungsvideos. Bis auf „LAION“ und diese beiden korrigiert die Hörfassung genau diese Fälle inzwischen selbst, Grafik-Beschriftungen aber nur direkt vor einer Bildunterschrift. Aufzählungszeichen mitten im Text und doppelte Bildunterschriften korrigiert sie ebenfalls. Ähnliche Fälle meldet `pruefen.py` weiterhin. Bildunterschriften („Abbildung 2: …“) werden bewusst mitgelesen.
+Die ersten fünf Beispiele stammen aus den Testtexten, die beiden folgenden aus dem Sprechtext eines Schulungsvideos, die Bibelstellen aus einer Andacht. Bis auf „LAION“, die Bibelstellen und die beiden aus dem Schulungsvideo korrigiert die Hörfassung genau diese Fälle inzwischen selbst, Grafik-Beschriftungen aber nur direkt vor einer Bildunterschrift. Aufzählungszeichen mitten im Text und doppelte Bildunterschriften korrigiert sie ebenfalls. Ähnliche Fälle meldet `pruefen.py` weiterhin. Bildunterschriften („Abbildung 2: …“) werden bewusst mitgelesen.
 
 Kürzel wie „DSGVO“ oder „LLM“ liest die Stimme ohne Hilfe als Buchstaben. Auch Prozentzeichen und Gedankenstriche liest sie richtig.
 
@@ -152,10 +153,12 @@ Jede Stimme besteht aus zwei Dateien in `stimmen/`: einer Aufnahme `<name>.wav` 
 - **Fremde Stimmen nur mit Erlaubnis** der Person.
 - **Die Aufnahme nicht nachbearbeiten.** Wer die Atemzüge in der Aufnahme durch Stille ersetzt, bekommt hörbar schlechtere Satzenden. Die Atemzüge senkt später ohnehin `atem.py` ab.
 
-Die beiden mitgelieferten Stimmen entstanden mit dem Modell `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit` aus einer Beschreibung; gesprochen wurde der Text in `stimmen/<name>.txt`.
+Die vier mitgelieferten Stimmen entstanden mit dem Modell `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit` aus einer Beschreibung; gesprochen wurde der Text in `stimmen/<name>.txt`.
 
 - `erzaehler`: „Ein deutscher Hörbuch-Erzähler, männlich, mittleres Alter, sonore warme Stimme, klare Aussprache ohne Akzent. Ausdrucksstark und erzählend wie bei einem Sachbuch-Podcast: starke Satzmelodie, Fragen klingen wie Fragen, Wichtiges wird hervorgehoben.“
 - `dozent`: „Ein deutscher Sprecher, männlich, mittleres Alter, warme Stimme, klare Aussprache ohne Akzent. Lebendiger, engagierter Vortrag wie ein begeisterter Dozent: betont Schlüsselwörter, variiert Tonhöhe und Tempo deutlich, macht kleine Spannungspausen vor wichtigen Punkten.“
+- `andacht`: „Ein deutscher Sprecher, männlich, reifes Alter, tiefe, warme und sanfte Stimme, klare Aussprache ohne Akzent. Ruhiger, besinnlicher Vortrag wie ein Seelsorger bei einer Andacht: langsames Tempo, gelassene Satzmelodie, nachdenkliche Pausen, leise Eindringlichkeit, nie gehetzt und nie theatralisch.“ Gesprochen langsamer wird sie dadurch nicht: Bei Tempo 1.0 war eine Probe so lang wie mit `erzaehler` und `dozent`. Der Unterschied liegt im Ton.
+- `marketing`: „Ein deutscher Sprecher, männlich, mittleres Alter, warme, natürliche Stimme, klare Aussprache ohne Akzent. Ruhiger Gesprächston, nah am Hörer, wie jemand, der einem Kollegen am Schreibtisch ein Werkzeug zeigt: freundlich, sicher und unaufgeregt.“ Gedacht für kurze Erklär- und Produktvideos mit Du-Ansprache, empfohlenes Tempo `-t 1.1`. Sie wurde aus sechs Läufen mit drei Beschreibungen ausgewählt. In einer Probe von 68 Wörtern lag ihr Tonhöhenumfang etwas über dem von `erzaehler` (11,9 statt 10,5 Halbtöne). An das Geschlecht in der Beschreibung hielt sich das Modell dabei nicht verlässlich: Ein Lauf mit der Beschreibung eines Mannes ergab eine Frauenstimme, beide Läufe mit der Beschreibung einer Frau ergaben Männerstimmen. Jeden Kandidaten also anhören, bevor man ihn ablegt.
 
 Dieselbe Beschreibung ergibt bei jedem Lauf eine etwas andere Stimme; exakt ist nur die abgelegte Datei.
 
@@ -204,7 +207,7 @@ Wer eine Regel der Hörfassung ändert, lässt danach `.venv/bin/python -m unitt
 
 GNU Affero General Public License 3.0 oder neuer, siehe [LICENSE](LICENSE). Grund ist PyMuPDF, das `pdf_zu_text.py` für die PDF-Auswertung nutzt und das unter dieser Lizenz steht.
 
-Die Sprachmodelle sind nicht Teil des Repos. Sie werden beim ersten Lauf von Hugging Face geladen und landen in `~/.cache/huggingface/`. Modelle, Bibliotheken und die Herkunft der beiden Stimmen stehen in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+Die Sprachmodelle sind nicht Teil des Repos. Sie werden beim ersten Lauf von Hugging Face geladen und landen in `~/.cache/huggingface/`. Modelle, Bibliotheken und die Herkunft der mitgelieferten Stimmen stehen in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Autor
 
@@ -235,13 +238,13 @@ Dann in einer Runde fragen, jeweils mit Empfehlung:
 
 - Welche Texte vertont werden sollen, in welchem Format und wo sie liegen.
 - Wofür das Hörbuch gedacht ist: Lernen, Korrekturhören, Weitergeben. Beim Weitergeben auf die Rechte am Text hinweisen.
-- Ob der Erzähler passt (Empfehlung) oder der Dozent oder eine eigene Aufnahme gewünscht ist. Die Entscheidung fällt nach der Hörprobe.
+- Ob der Erzähler passt (Empfehlung) oder eine der anderen Stimmen aus [Funktionen](#funktionen) oder eine eigene Aufnahme gewünscht ist. Die Entscheidung fällt nach der Hörprobe.
 
 ### Ablauf
 
 1. **Einrichten:** `<ordner>/einrichten.sh`. Dauert einige Minuten.
 2. **Text vorbereiten:** Bei PDFs zuerst nur die Hörfassung erzeugen: `<ordner>/.venv/bin/python <ordner>/werkzeuge/hoerfassung.py <datei>.pdf` schreibt `<datei>_hoerfassung.txt`. Dann `<ordner>/.venv/bin/python <ordner>/werkzeuge/pruefen.py <datei>_hoerfassung.txt`, die Funde dem Nutzer zeigen und mit seinem Einverständnis in der Hörfassung korrigieren (Tabelle in [Hörfassung prüfen](#hörfassung-prüfen)). Bei Textdateien `pruefen.py` direkt auf die Datei anwenden.
-3. **Hörprobe:** einen typischen Absatz von etwa 1 000 Zeichen in eine eigene Datei im Arbeitsordner des Nutzers kopieren und mit beiden Stimmen vertonen (`-v erzaehler -o probe_erzaehler.mp3`, `-v dozent -o probe_dozent.mp3`). Der allererste Aufruf lädt etwa 2 GB Modelle; das vorher ankündigen. Die Dateien mit `open <datei>` öffnen und fragen, was dem Nutzer gefällt. Für Tempo-Varianten die Probe einmal mit `-t 1.0` vertonen und daraus ohne Neuvertonung ableiten: `ffmpeg -i probe.mp3 -af atempo=1.1 probe_1.1.mp3`. Der gewählte Wert kommt als `-t` in den Aufruf; ohne `-t` gilt 1.20.
+3. **Hörprobe:** einen typischen Absatz von etwa 1 000 Zeichen in eine eigene Datei im Arbeitsordner des Nutzers kopieren und mit dem Erzähler und einer zweiten, zum Zweck passenden Stimme vertonen (etwa `-v erzaehler -o probe_erzaehler.mp3`, `-v dozent -o probe_dozent.mp3`). Der allererste Aufruf lädt etwa 2 GB Modelle; das vorher ankündigen. Die Dateien mit `open <datei>` öffnen und fragen, was dem Nutzer gefällt. Für Tempo-Varianten die Probe einmal mit `-t 1.0` vertonen und daraus ohne Neuvertonung ableiten: `ffmpeg -i probe.mp3 -af atempo=1.1 probe_1.1.mp3`. Der gewählte Wert kommt als `-t` in den Aufruf; ohne `-t` gilt 1.20.
 4. **Ganzer Text:** Dauer vorher nennen, aus der Ausgabe von `pruefen.py`. Bei einem PDF mit fertiger Hörfassung `vorlesen.sh <datei>.pdf` aufrufen; es nutzt die korrigierte Hörfassung und schreibt `<datei>.mp3`.
    - **Läufe über zwei Minuten im Hintergrund starten,** sonst bricht die Zeitgrenze deines Werkzeugs sie ab. In Claude Code mit der Option für Hintergrundbefehle: `caffeinate -i <ordner>/vorlesen.sh <datei> > <datei>.log 2>&1`. Fortschritt: `grep Stück <datei>.log | tail -1`.
    - **Soll der Lauf später starten** (etwa nachts), zuerst prüfen, ob der Mac in den Ruhezustand geht (`pmset -g | grep sleep`), und eine Lösung vorschlagen, die nicht von deiner Session abhängt. In der Nacht der Zeitumstellung (letzter Sonntag im Oktober) gibt es 02:00 bis 03:00 Uhr zweimal.
