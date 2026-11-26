@@ -13,6 +13,7 @@ Usage:
 import importlib.util
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -264,6 +265,93 @@ class SprecherUebersteht(unittest.TestCase):
         self.assertIn("kein Ausgabegerät", auftraege[0].ergebnis["fehler"])
 
 
+@unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
+class Liefern(unittest.TestCase):
+    """--liefern: Der Ton geht als 16-Bit-PCM an den Aufrufer statt in den Lautsprecher.
+    socketpair statt eines gebundenen Sockets, das geht auch in einer Sandbox; Modell und
+    Player braucht der Weg nicht."""
+
+    def setUp(self):
+        import socket
+
+        import numpy as np
+        import sprechdienst
+        self.np, self.s = np, sprechdienst
+        self.dienst = sprechdienst.Dienst(Path(tempfile.gettempdir()) / "unbenutzt.sock", 60)
+        self.dienst_seite, self.aufrufer = socket.socketpair()
+        self.rate = sprechdienst.qwen.SAMPLE_RATE
+
+    def tearDown(self):
+        self.dienst_seite.close()
+        self.aufrufer.close()
+
+    def _auftrag(self, text="Ein Satz, der lang genug für ein eigenes Stück ist."):
+        return self.s.Auftrag(text=text, stimme="erzaehler", tempo=1.0, mit_atem=True,
+                              runde=self.dienst.runde, ziel=self.dienst_seite)
+
+    def test_ton_kommt_als_pcm_beim_aufrufer_an(self):
+        stueck = self.np.full(self.rate // 10, 0.5, self.np.float32)
+        auftrag = self._auftrag()
+        # Lesen in einem eigenen Thread: Der Puffer eines socketpair fasst nur wenige KB,
+        # sendall wartete sonst ewig auf einen Leser
+        empfangen: list[bytes] = []
+
+        def lesen():
+            while teil := self.aufrufer.recv(65536):
+                empfangen.append(teil)
+
+        leser = threading.Thread(target=lesen, daemon=True)
+        leser.start()
+        with unittest.mock.patch.object(self.s.qwen, "synthesize_chunk", return_value=stueck):
+            self.dienst._sprechen(None, auftrag, None, "", None)
+        self.dienst_seite.shutdown(2)  # SHUT_RDWR: der Leser sieht dann das Ende
+        leser.join(timeout=5)
+        daten = b"".join(empfangen)
+        pause = int(self.rate * self.s.PAUSE_ABSATZ)
+        self.assertEqual(len(daten), (len(stueck) + pause) * 2)
+        werte = self.np.frombuffer(daten, "<i2")
+        self.assertEqual(int(werte[0]), 16383)
+        self.assertEqual(int(werte[-1]), 0)  # Pause am Ende
+        self.assertTrue(auftrag.ergebnis["geliefert"])
+        self.assertFalse(auftrag.ergebnis["abgebrochen"])
+
+    def test_geschlossener_aufrufer_bricht_den_auftrag_ab(self):
+        self.aufrufer.close()
+        stueck = self.np.zeros(self.rate // 10, self.np.float32)
+        auftrag = self._auftrag()
+        with unittest.mock.patch.object(self.s.qwen, "synthesize_chunk", return_value=stueck), \
+                self.assertLogs("sprechdienst", "INFO"):
+            self.dienst._sprechen(None, auftrag, None, "", None)
+        self.assertTrue(auftrag.ergebnis["abgebrochen"])
+
+    def test_stopp_loest_ein_haengendes_senden(self):
+        # Liest der Aufrufer nicht mehr (Netz weg, Player haengt), wartete sendall bis
+        # LIEFERN_TIMEOUT, und der Sprecher stuende so lange auch fuer alle anderen still
+        self.dienst_seite.settimeout(30)
+        stueck = self.np.zeros(self.rate * 2, self.np.float32)  # 96 KB, mehr als der Puffer
+        auftrag = self._auftrag()
+        auftrag.quelle = "sitzung-a"
+        self.dienst.aktuell = auftrag
+        fertig = threading.Event()
+
+        def sprechen():
+            self.dienst._sprechen(None, auftrag, None, "", None)
+            fertig.set()
+
+        with unittest.mock.patch.object(self.s.qwen, "synthesize_chunk", return_value=stueck), \
+                self.assertLogs("sprechdienst", "INFO"):
+            threading.Thread(target=sprechen, daemon=True).start()
+            self.assertFalse(fertig.wait(0.5))  # haengt wirklich in sendall
+            self.dienst._stoppen("sitzung-a")
+            self.assertTrue(fertig.wait(5))
+        self.assertTrue(auftrag.ergebnis["abgebrochen"])
+
+    def test_pcm_begrenzt_auf_16_bit(self):
+        werte = self.np.frombuffer(self.s.pcm(self.np.array([2.0, -2.0, 0.0], self.np.float32)),
+                                   "<i2")
+        self.assertEqual(werte.tolist(), [32767, -32767, 0])
+
+
 def _sockets_erlaubt() -> bool:
     """Agenten-Sandboxen (Seatbelt auf macOS) verbieten oft das Binden von Unix-Sockets."""
     import socket
@@ -307,6 +395,44 @@ class Protokoll(unittest.TestCase):
         os.environ.pop("SPRECHDIENST_SOCKET", None)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_liefern_schickt_kopfzeile_und_ton(self):
+        import io
+
+        import numpy as np
+
+        def sprecher_attrappe():
+            auftrag = self.dienst.auftraege.get(timeout=5)
+            self.s._pcm_senden(auftrag.ziel, np.full(1000, 0.25, np.float32))
+            auftrag.fertig.set()
+
+        threading.Thread(target=sprecher_attrappe, daemon=True).start()
+        ausgabe = io.BytesIO()
+        rc = self.s.empfangen({"cmd": "sprich", "text": "Hallo.", "quelle": "a"}, ausgabe)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(ausgabe.getvalue()), 2000)  # Kopfzeile nicht im Ton
+        self.assertEqual(int(np.frombuffer(ausgabe.getvalue(), "<i2")[0]), 8191)
+
+    def test_liefern_endet_still_wenn_der_player_schliesst(self):
+        # Der Normalfall beim Stopp im Fernbetrieb: Der Player endet mitten im Ton. Ohne
+        # Vorkehrung endete der Client mit Exit 120 und "Exception ignored" auf stderr
+        import numpy as np
+
+        def sprecher_attrappe():
+            auftrag = self.dienst.auftraege.get(timeout=10)
+            for _ in range(50):
+                if not self.s._pcm_senden(auftrag.ziel, np.zeros(12000, np.float32)):
+                    break
+            auftrag.fertig.set()
+
+        threading.Thread(target=sprecher_attrappe, daemon=True).start()
+        skript = REPO / "werkzeuge" / "sprechdienst.py"
+        lauf = subprocess.run(
+            ["/bin/bash", "-c", f'echo "Ein Satz." | "{sys.executable}" "{skript}" --liefern - '
+                                '| head -c 100 > /dev/null; exit "${PIPESTATUS[1]}"'],
+            capture_output=True, text=True, timeout=30, env={**os.environ})
+        self.assertEqual(lauf.returncode, 0, lauf.stderr)
+        self.assertNotIn("Exception ignored", lauf.stderr)
+
     def test_status(self):
         antwort = self.s.senden({"cmd": "status"})
         self.assertTrue(antwort["ok"])
@@ -325,6 +451,8 @@ class Protokoll(unittest.TestCase):
                         {"cmd": "sprich", "text": "Hallo.", "lauter": 30},
                         {"cmd": "sprich", "text": "Hallo.", "lauter": -3},
                         {"cmd": "sprich", "text": "Hallo.", "lauter": "laut"},
+                        {"cmd": "sprich", "text": "Hallo.", "liefern": True, "warten": True},
+                        {"cmd": "sprich", "text": "Hallo.", "liefern": "ja"},
                         {"cmd": "unbekannt"},
                         ["kein", "objekt"],
                         # falsche Typen: frueher als "None", "['a']" oder True durchgereicht

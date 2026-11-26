@@ -90,6 +90,58 @@ oder unter `env` in den Einstellungen von Claude Code:
 neben lauter Musik trotzdem unter, `SPRECHEN_LAUTER` auf 12 setzen; darüber klingt sie zunehmend
 gepresst, weil der Limiter mehr abfangen muss.
 
+## Auf einem Gerät ohne MLX (Fernbetrieb)
+
+Auf Linux oder einem Mac ohne Apple Silicon rechnet ein Mac im Netz, und das Gerät, an dem du
+arbeitest, spielt den Ton selbst ab. Der Weg läuft über ssh, ein offener Port ist nicht nötig.
+
+```
+dieses Gerät: Stop-Hook ──ssh──► Mac: sprechen.sh --liefern ──► Sprechdienst
+              Player    ◄── Ton Satz für Satz, 16-Bit-PCM, 24 kHz mono (48 KB/s)
+```
+
+**Voraussetzungen auf dem Mac:** dieses Repo mit `./einrichten.sh`, Anmeldung per ssh-Schlüssel
+ohne Rückfrage (die Hooks nutzen `BatchMode=yes`). Ob MLX in einer ssh-Sitzung die GPU bekommt:
+
+```bash
+ssh <MAC> '<REPO>/.venv/bin/python -c "import mlx.core as mx; print(mx.default_device())"'
+```
+
+Erwartet wird `Device(gpu, 0)`.
+
+**Auf diesem Gerät:**
+
+1. Dieses Repo klonen, nur für das Hook-Skript; `./einrichten.sh` ist hier nicht nötig. Das
+   Skript braucht Python ab 3.9 und nur die Standardbibliothek.
+2. Einen Player bereithalten. Das Skript nimmt den ersten vorhandenen von `paplay`, `pw-play`,
+   `aplay` und `ffplay`, oder den Befehl aus `SPRECHEN_PLAYER`, der 16-Bit-PCM mit 24 kHz mono
+   von stdin spielt. `ffplay` braucht FFmpeg 5.1 oder neuer (Option `-ch_layout`). Geprüft
+   sind `paplay` unter Linux und `ffplay` 9.1 unter macOS; `pw-play` und `aplay` sind
+   ungeprüft (Stand 27.11.2026).
+3. Die Hooks wie oben eintragen, mit `python3` statt `.venv/bin/python` und den Variablen davor:
+
+   ```json
+   "command": "SPRECHEN_ENTFERNT=<MAC> python3 <REPO>/integrationen/claude-code/claude_sprechen.py stop"
+   ```
+
+   Ebenso für `prompt`. Liegt das Repo auf dem Mac an einem anderen Ort als unter demselben
+   Pfad in `~`, gibt `SPRECHEN_ENTFERNT_REPO` ihn an.
+4. Optional in `~/.ssh/config` für den Mac `ControlMaster auto`, `ControlPath` und
+   `ControlPersist 10m`: Jeder Aufruf nutzt dann die offene Verbindung und spart den Aufbau.
+
+| Variable | Bedeutung |
+|---|---|
+| `SPRECHEN_ENTFERNT` | ssh-Ziel des Macs, etwa ein Host aus `~/.ssh/config`; ohne sie rechnet dieses Gerät selbst |
+| `SPRECHEN_ENTFERNT_REPO` | Ort des Repos auf dem Mac (Standard: derselbe Pfad unter `~` wie hier) |
+| `SPRECHEN_PLAYER` | eigener Player-Befehl, etwa `aplay -q -t raw -f S16_LE -r 24000 -c 1` |
+
+**So verhält es sich:** Der Stop-Hook übergibt die Wiedergabe einem Hintergrundprozess und
+kehrt sofort zurück. Mehrere Sitzungen dieses Geräts sprechen nacheinander, eine Sperre unter
+`$XDG_RUNTIME_DIR/hoerbuch-generator/` (sonst `~/.cache/hoerbuch-generator/`) hält sie in der
+Reihe. Eine Eingabe beendet die Wiedergabe der eigenen Sitzung hier sofort und stoppt den
+Auftrag auf dem Mac. Läuft für die Sitzung nichts, baut die Eingabe keine Verbindung auf. Fehler der Wiedergabe stehen in `wiedergabe.log` im selben Ordner. Der Mac
+muss wach und erreichbar sein; ist er es nicht, bleibt es still, und die Sitzung läuft weiter.
+
 ## Fehlerbilder
 
 | Fehlerbild | Ursache | Lösung |
@@ -99,6 +151,7 @@ gepresst, weil der Limiter mehr abfangen muss.
 | Kein Ton, obwohl der Dienst läuft | Die Antwort trägt keine Sprechmarke | `/sprechen` erneut aufrufen |
 | Ausgabe bricht mitten im Satz ab | Neue Eingabe oder Bericht eines Hintergrund-Agenten in derselben Sitzung | gewollt bei neuer Eingabe; bei Agenten-Berichten nicht abschaltbar |
 | Die Sprechmarke steht sichtbar im Fenster | Die Oberfläche blendet HTML-Kommentare nicht aus | nur Darstellung |
+| Fernbetrieb: kein Ton | Mac nicht erreichbar, ssh fragt nach einem Passwort, oder kein Player gefunden | `wiedergabe.log` lesen; `echo "Das ist ein Satz vom Mac." \| ssh <MAC> '<REPO>/sprechen.sh --liefern -' \| <Player>` von Hand |
 
 ## Tests
 

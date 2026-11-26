@@ -7,7 +7,7 @@ Fuer lange Texte bleibt vorlesen.sh der Weg (MP3, Fortsetzen nach Abbruch).
 
 Usage:
     .venv/bin/python werkzeuge/sprechdienst.py [-v STIMME] [-t TEMPO] [--lauter DB] [--mit-atem]
-        [--warten] [--quelle ID [--ansage TEXT]] [TEXT | -]
+        [--warten | --liefern] [--quelle ID [--ansage TEXT]] [TEXT | -]
     .venv/bin/python werkzeuge/sprechdienst.py --stopp [--quelle ID] | --status | --beenden
 
 Aufbau:
@@ -29,7 +29,10 @@ Aufbau:
       dort ueber atem.py abgesenkt; --mit-atem laesst ihn unveraendert.
     - --lauter DB hebt die Stimme an, etwa gegen Musik im Hintergrund; ein Limiter haelt
       die Spitzen unter LIMIT_DB. Ohne die Option bleibt der Pegel wie erzeugt.
-    - Wiedergabe ueber den AudioPlayer von mlx-audio (sounddevice, gepuffert).
+    - Wiedergabe ueber den AudioPlayer von mlx-audio (sounddevice, gepuffert). Mit --liefern
+      spielt der Dienst nichts ab, sondern schreibt den Ton Satz fuer Satz als 16-Bit-PCM
+      (24 kHz, mono) nach stdout. Ueber ssh aufgerufen, rechnet so ein Mac fuer ein anderes
+      Geraet, das den Ton selbst abspielt; Warteschlange und Stopp je Quelle gelten weiter.
     - Metal steht in einer macOS-Sandbox nicht zur Verfuegung. Wer den Dienst aus einer
       Sandbox heraus startet (etwa aus einem Agenten-Werkzeug), bekommt eine Fehlermeldung
       statt Sprache; Hooks oder ein Terminal starten ihn ausserhalb.
@@ -40,6 +43,9 @@ Protokoll: eine JSON-Zeile je Verbindung, eine JSON-Zeile als Antwort.
     {"cmd": "stopp", "quelle": ""} | {"cmd": "status"} | {"cmd": "beenden"}
     Ein stopp mit quelle bricht nur die Auftraege mit derselben quelle ab, ohne quelle alle.
     Die ansage wird vorangestellt, wenn zuletzt eine andere quelle hoerbar sprach.
+    Mit "liefern": true (nicht zusammen mit warten) antwortet der Dienst mit der Kopfzeile
+    {"ok": true, "format": "s16le", "rate": 24000, "kanaele": 1}, danach folgt roher Ton bis
+    zum Ende der Verbindung.
     Fehlt ein Feld oder ist es null, gilt die Vorgabe; ein Feld mit anderem Typ als oben
     (etwa "false" als Zeichenkette fuer mit_atem) weist der Dienst mit ok false ab.
 """
@@ -77,6 +83,7 @@ MAX_ANFRAGE = 1_000_000  # Bytes je Anfrage
 # bei rund -14 LUFS; +8 dB mit Limiter brachte marketing.wav auf -14 LUFS (26.11.2026)
 MAX_LAUTER = 15.0
 LIMIT_DB = -1.5  # Obergrenze des Limiters, Abstand zu 0 dBFS fuer Spitzen zwischen den Samples
+LIEFERN_TIMEOUT = 120.0  # Sekunden, die sendall bei --liefern auf einen lesenden Aufrufer wartet
 
 log = logging.getLogger("sprechdienst")
 
@@ -194,6 +201,9 @@ class Auftrag:
     abbruch: threading.Event = field(default_factory=threading.Event)
     # Zeiten dieses Auftrags fuer --warten; bleibt so, wenn er vor dem Sprechen endet
     ergebnis: dict = field(default_factory=lambda: {"abgebrochen": True})
+    # Mit --liefern die Verbindung des Aufrufers: Der Ton geht dorthin statt in den
+    # Lautsprecher, damit ein anderes Geraet ihn abspielen kann
+    ziel: socket.socket | None = None
 
     def vorbei(self, runde: int) -> bool:
         return self.runde != runde or self.abbruch.is_set()
@@ -284,7 +294,9 @@ class Dienst:
             conn.settimeout(10)
             try:
                 anfrage = json.loads(_zeile_lesen(conn))
-                antwort = self._bearbeiten(anfrage)
+                antwort = self._bearbeiten(anfrage, conn)
+                if antwort is None:  # --liefern: Kopfzeile und Ton sind schon gesendet
+                    return
             except (ValueError, OSError) as e:
                 antwort = {"ok": False, "fehler": f"Ungültige Anfrage: {e}"}
             except Exception as e:  # der Aufrufer soll eine Antwort bekommen, kein leeres {}
@@ -295,7 +307,7 @@ class Dienst:
             except OSError:
                 pass
 
-    def _bearbeiten(self, anfrage: dict) -> dict:
+    def _bearbeiten(self, anfrage: dict, conn: socket.socket | None = None) -> dict | None:
         if not isinstance(anfrage, dict):
             return {"ok": False, "fehler": "Anfrage muss ein JSON-Objekt sein"}
         cmd = anfrage.get("cmd")
@@ -329,8 +341,11 @@ class Dienst:
             ansage = _feld(anfrage, "ansage", str, "").strip()
             mit_atem = _feld(anfrage, "mit_atem", bool, False)
             warten = _feld(anfrage, "warten", bool, False)
+            liefern = _feld(anfrage, "liefern", bool, False)
         except (TypeError, ValueError) as e:
             return {"ok": False, "fehler": str(e)}
+        if liefern and (warten or conn is None):
+            return {"ok": False, "fehler": "liefern geht nicht zusammen mit warten"}
         if not text:
             return {"ok": False, "fehler": "Kein Text"}
         if stimme not in stimmen():
@@ -344,7 +359,10 @@ class Dienst:
         # und hielte den Dienst samt Modell sonst unbegrenzt am Leben
         self.aktiv = time.monotonic()
         auftrag = Auftrag(text=text, stimme=stimme, tempo=tempo, mit_atem=mit_atem,
-                          runde=self.runde, lauter=lauter, quelle=quelle, ansage=ansage)
+                          runde=self.runde, lauter=lauter, quelle=quelle, ansage=ansage,
+                          ziel=conn if liefern else None)
+        if liefern:
+            return self._liefern(auftrag, conn)
         self.auftraege.put(auftrag)
         if warten:
             while not auftrag.fertig.wait(1.0):
@@ -352,6 +370,24 @@ class Dienst:
                     break
             return {"ok": True, "auftrag": auftrag.ergebnis}
         return {"ok": True, "warteschlange": self.auftraege.qsize()}
+
+    def _liefern(self, auftrag: Auftrag, conn: socket.socket) -> None:
+        """Kopfzeile senden, Auftrag einreihen und die Verbindung offen halten, bis der
+        Sprecher den Ton gesendet hat. Danach schliesst _verbindung sie, und der Aufrufer
+        erkennt am Dateiende, dass nichts mehr kommt."""
+        kopf = {"ok": True, "format": "s16le", "rate": qwen.SAMPLE_RATE, "kanaele": 1}
+        try:
+            conn.sendall((json.dumps(kopf) + "\n").encode())
+        except OSError:
+            return None
+        # Ein Stueck Audio kann laenger dauern als die 10 s fuer Anfragen, und sendall
+        # wartet, solange der Aufrufer nicht liest
+        conn.settimeout(LIEFERN_TIMEOUT)
+        self.auftraege.put(auftrag)
+        while not auftrag.fertig.wait(1.0):
+            if self.ende.is_set():
+                break
+        return None
 
     def _stoppen(self, quelle: str = "") -> None:
         """Ausgabe abbrechen. Mit quelle nur die Auftraege dieses Aufrufers, sonst alle:
@@ -381,6 +417,15 @@ class Dienst:
                         self.auftraege.get_nowait().fertig.set()
                     except queue.Empty:
                         break
+                aktuell = self.aktuell
+            if aktuell is not None and aktuell.ziel is not None:
+                # Mit --liefern kann der Sprecher in sendall haengen, wenn der Aufrufer nicht
+                # mehr liest (Netz weg). Das Flag allein saehe er erst nach LIEFERN_TIMEOUT;
+                # shutdown laesst sendall sofort scheitern
+                try:
+                    aktuell.ziel.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
             if self.player is not None:
                 self.player.flush()
 
@@ -482,32 +527,55 @@ class Dienst:
             audio = nachbearbeiten(audio, auftrag.tempo, auftrag.lauter)
             pause = PAUSE_ABSATZ if absatzende else PAUSE_SATZ
             audio = np.concatenate([audio, np.zeros(int(qwen.SAMPLE_RATE * pause), np.float32)])
-            # Pruefen und Einreihen unter der Sperre, sonst landet nach einem Stopp noch ein
-            # Stueck im Puffer
-            with self._player_sperre:
-                if auftrag.vorbei(self.runde):
+            if auftrag.ziel is not None:
+                # Ton an den Aufrufer statt in den Lautsprecher. Bricht dessen Verbindung
+                # ab (Player beendet, Netz weg), endet der Auftrag hier
+                if auftrag.vorbei(self.runde) or not _pcm_senden(auftrag.ziel, audio):
+                    auftrag.abbruch.set()
                     break
-                self.player.queue_audio(audio)
+            else:
+                # Pruefen und Einreihen unter der Sperre, sonst landet nach einem Stopp noch
+                # ein Stueck im Puffer
+                with self._player_sperre:
+                    if auftrag.vorbei(self.runde):
+                        break
+                    self.player.queue_audio(audio)
             audio_s += len(audio) / qwen.SAMPLE_RATE
             if erster_ton is None:
                 erster_ton = time.monotonic() - auftrag.eingang
-        # Ein kurzer Auftrag erreicht die Puffergrenze des Players nie, dann startet erst
-        # wait_for_drain den Stream. Das geschieht hier unter der Sperre: Ohne sie schloss
-        # ein gleichzeitiger Stopp den Stream mitten im Start (AttributeError)
-        with self._player_sperre:
-            if (not auftrag.vorbei(self.runde) and not self.player.playing
-                    and self.player.buffered_samples() > 0):
-                self.player.start_stream()
-        if not auftrag.vorbei(self.runde):
-            self.player.wait_for_drain()
-        with self._player_sperre:
-            self.player.stop_stream()
+        if auftrag.ziel is None:
+            # Ein kurzer Auftrag erreicht die Puffergrenze des Players nie, dann startet
+            # erst wait_for_drain den Stream. Das geschieht hier unter der Sperre: Ohne sie
+            # schloss ein gleichzeitiger Stopp den Stream mitten im Start (AttributeError)
+            with self._player_sperre:
+                if (not auftrag.vorbei(self.runde) and not self.player.playing
+                        and self.player.buffered_samples() > 0):
+                    self.player.start_stream()
+            if not auftrag.vorbei(self.runde):
+                self.player.wait_for_drain()
+            with self._player_sperre:
+                self.player.stop_stream()
         auftrag.ergebnis = self.letzter = {
             "stuecke": len(plan), "ausgelassen": ausgelassen,
             "erster_ton_s": round(erster_ton or 0.0, 2),
             "rechenzeit_s": round(rechnen, 2), "atem_s": round(atem, 2),
-            "audio_s": round(audio_s, 1), "abgebrochen": auftrag.vorbei(self.runde)}
+            "audio_s": round(audio_s, 1), "abgebrochen": auftrag.vorbei(self.runde),
+            "geliefert": auftrag.ziel is not None}
         log.info("Auftrag: %s", json.dumps(self.letzter, ensure_ascii=False))
+
+
+def pcm(audio: np.ndarray) -> bytes:
+    """float32 im Bereich -1 bis 1 als 16-Bit-PCM, little endian, wie es Player erwarten."""
+    return (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+def _pcm_senden(conn: socket.socket, audio: np.ndarray) -> bool:
+    try:
+        conn.sendall(pcm(audio))
+        return True
+    except OSError as e:
+        log.info("Aufrufer nimmt keinen Ton mehr an (%s), Auftrag endet", e)
+        return False
 
 
 # --- Aufrufer --------------------------------------------------------------------------
@@ -540,6 +608,48 @@ def senden(anfrage: dict, timeout: float | None = 10.0) -> dict:
         s.connect(str(socket_pfad()))
         s.sendall((json.dumps(anfrage, ensure_ascii=False) + "\n").encode())
         return json.loads(_zeile_lesen(s) or "{}")
+
+
+def empfangen(anfrage: dict, ausgabe) -> int:
+    """Auftrag mit liefern senden und den Ton nach ausgabe schreiben, bis der Dienst die
+    Verbindung schliesst. Gedacht fuer einen Aufruf ueber ssh, dessen stdout ein Player auf
+    einem anderen Geraet liest."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect(str(socket_pfad()))
+        s.sendall((json.dumps({**anfrage, "liefern": True}, ensure_ascii=False) + "\n").encode())
+        # Kopfzeile von Hand lesen: _zeile_lesen liest in grossen Stuecken und verschluckte
+        # sonst den Anfang des Tons, der direkt hinter dem Zeilenende folgt
+        puffer = b""
+        while b"\n" not in puffer:
+            teil = s.recv(65536)
+            if not teil:
+                break
+            puffer += teil
+        kopf, _, ton = puffer.partition(b"\n")
+        antwort = json.loads(kopf or b"{}")
+        if not antwort.get("ok"):
+            log.error("%s", antwort.get("fehler", "unbekannter Fehler"))
+            return 1
+        try:
+            # Was hinter der Kopfzeile schon mitkam, zuerst; dann lesen bis zum Ende. Meist
+            # kommt die Kopfzeile allein, der erste Ton erst Sekunden spaeter
+            if ton:
+                ausgabe.write(ton)
+                ausgabe.flush()
+            while teil := s.recv(65536):
+                ausgabe.write(teil)
+                ausgabe.flush()
+        except BrokenPipeError:
+            # Der Player wurde beendet, etwa durch einen Stopp; der Dienst merkt es am
+            # geschlossenen Socket und bricht den Auftrag ab. stdout auf /dev/null: Sonst
+            # leert Python es beim Beenden erneut, meldet "Exception ignored" und endet mit
+            # Exit 120 (Rezept aus der Python-Doku zu SIGPIPE)
+            try:
+                os.dup2(os.open(os.devnull, os.O_WRONLY), ausgabe.fileno())
+            except (OSError, ValueError):  # ausgabe ohne Deskriptor, etwa in Tests
+                pass
+            return 0
+    return 0
 
 
 def dienst_starten() -> bool:
@@ -575,6 +685,9 @@ def main() -> int:
     parser.add_argument("--mit-atem", action="store_true", help="Atemgeräusche nicht absenken")
     parser.add_argument("--warten", action="store_true",
                         help="erst zurückkehren, wenn der Text gesprochen ist, und Zeiten zeigen")
+    parser.add_argument("--liefern", action="store_true",
+                        help="Ton nicht abspielen, sondern als 16-Bit-PCM (24 kHz, mono) nach "
+                             "stdout schreiben, etwa für einen Player auf einem anderen Gerät")
     gruppe = parser.add_mutually_exclusive_group()
     gruppe.add_argument("--stopp", action="store_true", help="Ausgabe abbrechen, Warteschlange leeren")
     gruppe.add_argument("--status", action="store_true", help="Zustand des Dienstes zeigen")
@@ -607,6 +720,9 @@ def main() -> int:
             print(json.dumps(antwort, ensure_ascii=False, indent=2))
         return 0 if antwort.get("ok") else 1
 
+    if args.liefern and args.warten:
+        log.error("--liefern und --warten schließen sich aus")
+        return 1
     if not 0.5 <= args.tempo <= 2.0:
         log.error("Tempo %s liegt nicht zwischen 0.5 und 2.0", args.tempo)
         return 1
@@ -628,11 +744,17 @@ def main() -> int:
     if not gestartet:
         log.error("Dienst nicht erreichbar, siehe %s", DEFAULT_LOG)
         return 1
+    anfrage = {"cmd": "sprich", "text": text, "stimme": args.stimme, "tempo": args.tempo,
+               "lauter": args.lauter, "quelle": args.quelle, "ansage": args.ansage,
+               "mit_atem": args.mit_atem}
+    if args.liefern:
+        try:
+            return empfangen(anfrage, sys.stdout.buffer)
+        except (OSError, ValueError) as e:
+            log.error("Dienst antwortet nicht: %s", e)
+            return 1
     try:
-        antwort = senden({"cmd": "sprich", "text": text, "stimme": args.stimme,
-                          "tempo": args.tempo, "lauter": args.lauter, "quelle": args.quelle,
-                          "ansage": args.ansage,
-                          "mit_atem": args.mit_atem, "warten": args.warten},
+        antwort = senden({**anfrage, "warten": args.warten},
                          timeout=None if args.warten else 10.0)
     except OSError as e:
         log.error("Dienst antwortet nicht: %s", e)

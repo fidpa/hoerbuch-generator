@@ -6,6 +6,28 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.4.0] - 2026-11-27: Gesprächsmodus auch auf Geräten ohne MLX, der Mac rechnet über ssh
+
+### Hinzugefügt
+
+- **`sprechen.sh --liefern`:** Der Dienst spielt nichts ab, sondern schreibt den Ton Satz für
+  Satz als 16-Bit-PCM (24 kHz, mono) nach stdout. Über ssh aufgerufen, rechnet ein Mac so für
+  ein anderes Gerät, das den Ton selbst abspielt. Warteschlange und Stopp je Quelle gelten
+  weiter.
+- **Fernbetrieb im Gesprächsmodus:** Mit `SPRECHEN_ENTFERNT=<ssh-ziel>` nutzt das Hook-Skript
+  den Sprechdienst eines Macs über ssh und spielt den Ton mit einem lokalen Player ab (paplay,
+  pw-play, aplay oder ffplay, sonst `SPRECHEN_PLAYER`). Damit spricht Claude Code auch auf
+  Linux-Geräten ohne MLX. Mehrere Sitzungen eines Geräts sprechen nacheinander, eine Eingabe
+  beendet nur die Wiedergabe der eigenen Sitzung. Läuft für die Sitzung nichts, baut die
+  Eingabe keine ssh-Verbindung auf.
+
+### Gemessen
+
+- **Fernbetrieb am 27.11.2026:** Ein Linux-Notebook spielte über `ssh` und `paplay` einen Satz
+  ab, den ein Mac mini M4 Pro mit `--liefern` erzeugt hatte. Auf dem Mac selbst ergab
+  `--liefern` für einen Satz mit neun Wörtern 2,94 s Ton. `ffplay` 9.1 lief mit den Optionen
+  des Hook-Skripts; `pw-play`, `aplay` und die Hooks auf einem Linux-Gerät sind ungeprüft.
+
 ## [0.3.0] - 2026-11-27: Antworten sofort sprechen, mit Gesprächsmodus für Claude Code
 
 ### Hinzugefügt
@@ -109,6 +131,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.4.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.4.0
 [0.3.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.3.0
 [0.2.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.2.0
 [0.1.2]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.2

@@ -140,6 +140,12 @@ Der erste Aufruf startet im Hintergrund einen Dienst (`werkzeuge/sprechdienst.py
 
 **Mehrere Aufrufer:** Nutzen mehrere Sitzungen eines Assistenten denselben Dienst, gibt jede mit `--quelle ID` eine Kennung mit, beim Sprechen wie beim Stoppen. `--stopp --quelle ID` bricht dann nur die Aufträge dieser Sitzung ab, die Antworten der anderen laufen weiter. `--stopp` ohne `--quelle` bricht alles ab. Mit `--ansage "Aus Projekt X."` stellt der Dienst diesen Satz voran, wenn zuletzt eine andere Quelle sprach; so hört man, von wem die Antwort kommt.
 
+**Für ein anderes Gerät rechnen:** Mit `--liefern` spielt der Dienst nichts ab, sondern schreibt den Ton Satz für Satz als 16-Bit-PCM (24 kHz, mono) nach stdout. Über ssh aufgerufen, rechnet der Mac, und ein Player auf dem anderen Gerät spielt ab, auch unter Linux ohne MLX:
+
+```bash
+echo "Das ist ein Satz vom Mac." | ssh mac '~/hoerbuch-generator/sprechen.sh --liefern -' | aplay -q -t raw -f S16_LE -r 24000 -c 1
+```
+
 **Claude Code:** Fertig angebunden ist der Dienst an Claude Code. Mit `/sprechen` hängt Claude jeder Antwort eine kurze, für das Ohr geschriebene Fassung an, und zwei Hooks geben sie an `sprechen.sh`. Hook-Skript, Command und Einrichtung: [integrationen/claude-code/](integrationen/claude-code/README.md).
 
 Aus einer macOS-Sandbox heraus (etwa aus dem Shell-Werkzeug eines KI-Agenten) läuft der Dienst nicht: Dort fehlen Metal und Unix-Sockets. Ein Hook oder ein Terminal startet ihn außerhalb.
