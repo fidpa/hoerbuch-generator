@@ -6,6 +6,49 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.3.0] - 2026-11-27: Antworten sofort sprechen, mit Gesprächsmodus für Claude Code
+
+### Hinzugefügt
+
+- **`sprechen.sh` und Sprechdienst:** kurze Texte sofort aus dem Lautsprecher statt als MP3. Ein
+  Dienst im Hintergrund hält das Modell geladen, nimmt Aufträge über einen Unix-Socket an und
+  spricht Satz für Satz, während der nächste entsteht. `--stopp` bricht ab, nach 20 Minuten
+  ohne Auftrag endet der Dienst. Gedacht für die Antworten eines KI-Assistenten.
+- **`sprechen.sh --lauter DB`:** hebt die Stimme um bis zu 15 dB an, mit Limiter, damit sie neben
+  Musik hörbar bleibt. Ohne die Option bleibt der Pegel unverändert.
+- **`sprechen.sh --quelle ID`:** Aufträge tragen eine Kennung des Aufrufers, und
+  `--stopp --quelle ID` bricht nur dessen Aufträge ab. So stoppt eine Eingabe in einer
+  KI-Sitzung nicht die Antwort einer anderen. `--ansage TEXT` wird vorangestellt, wenn zuletzt
+  eine andere Quelle sprach.
+- **Gesprächsmodus für Claude Code** (`integrationen/claude-code/`): Hook-Skript für Stop und
+  UserPromptSubmit, der Command `/sprechen` und eine Anleitung. Claude schreibt im Modus eine
+  kurze gesprochene Fassung als HTML-Kommentar ans Ende jeder Antwort, die Hooks geben sie an
+  `sprechen.sh`. Stimme, Tempo und Lautstärke über `SPRECHEN_STIMME`, `SPRECHEN_TEMPO`,
+  `SPRECHEN_LAUTER`.
+- **Tests für Sprechdienst und Hook-Skript:** Satzteilung, Protokoll samt Typprüfung, Stopp je
+  Quelle und die Exit-Codes des Hook-Skripts. Die CI installiert dafür zusätzlich numpy und
+  soundfile. Tests, die ffmpeg oder mlx-audio brauchen, überspringen sich ohne diese.
+- **Anleitung für Claude:** Abschnitt zum Einrichten des Gesprächsmodus.
+
+### Geändert
+
+- **`requirements.txt` pinnt `sounddevice==0.5.6`.** Der Sprechdienst spielt darüber ab; bisher
+  kam das Paket ohne feste Version über mlx-audio mit. Eingetragen in
+  `THIRD_PARTY_LICENSES.md`, samt dem mitgelieferten PortAudio (MIT).
+
+### Behoben
+
+- **`vorlesen.sh` in einer Sandbox:** Das Temp-Verzeichnis entsteht jetzt unter `TMPDIR`.
+  `mktemp -t` legte es auf macOS unter `/var/folders` an, was in einer Sandbox mit eigenem
+  Temp-Verzeichnis scheiterte.
+
+### Gemessen
+
+- **Sprechdienst auf einem Mac mini M4 Pro**, Stimme `marketing`, ein Satz je Auftrag: Modell
+  laden 4,2 bis 4,6 s je Dienststart, erster Ton 1,85 bis 1,94 s nach dem Auftrag bei schon
+  geladenem Modell. Ein einzelnes Wort („Probe.“) ergab zweimal kein Audio, der Dienst ließ das
+  Stück aus. Auf anderen Macs nicht gemessen.
+
 ## [0.2.0] - 2026-11-17: Zwei weitere Stimmen für Andacht und Marketing
 
 ### Hinzugefügt
@@ -66,6 +109,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.3.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.3.0
 [0.2.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.2.0
 [0.1.2]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.2
 [0.1.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.1.1

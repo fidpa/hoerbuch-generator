@@ -69,9 +69,10 @@ gelten die Bedingungen der jeweiligen Quelle.
 | [transformers](https://github.com/huggingface/transformers), huggingface-hub | Modelle laden | Apache 2.0 |
 | [NumPy](https://github.com/numpy/numpy) | Audiodaten | BSD-3-Clause, mit Bestandteilen unter weiteren freien Lizenzen |
 | [soundfile](https://github.com/bastibe/python-soundfile) | WAV lesen und schreiben | BSD-3-Clause |
+| [sounddevice](https://github.com/spatialaudio/python-sounddevice) | Wiedergabe des Sprechdienstes, bringt PortAudio mit | MIT; PortAudio ebenfalls MIT |
 
 PyMuPDF ist der Grund für die AGPL dieses Repos. Die Lizenzangaben stammen aus den
-Paketdaten der getesteten Versionen (24.10.2026).
+Paketdaten der getesteten Versionen (24.10.2026, sounddevice 26.11.2026).
 
 ### Programme (über Homebrew)
 

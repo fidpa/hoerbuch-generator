@@ -27,6 +27,7 @@ Der Generator verbindet eine natürliche Stimme, die vollständig auf dem Mac l�
 - **Leisere Atemzüge:** Die künstliche Stimme atmet hörbar ein. Ein darauf trainiertes Erkennungsmodell findet die Atemzüge und senkt sie um 18 dB ab, ohne etwas herauszuschneiden.
 - **Prüfung vorab:** `werkzeuge/pruefen.py` zeigt Stellen, die meist Nacharbeit brauchen, und schätzt Länge und Rechenzeit.
 - **Fortsetzen nach Abbruch:** Fertige Stücke bleiben erhalten. Derselbe Aufruf macht nach einem Abbruch beim ersten fehlenden Stück weiter.
+- **Sofort sprechen:** `sprechen.sh` spricht kurze Texte direkt aus dem Lautsprecher, Satz für Satz, über einen Dienst, der das Modell geladen hält. Gedacht für die Antworten eines KI-Assistenten, siehe [Sofort sprechen statt vorlesen](#sofort-sprechen-statt-vorlesen). Für Claude Code fertig angebunden: [Gesprächsmodus](integrationen/claude-code/README.md).
 - **Einrichtung mit Claude:** Wer Claude Code nutzt, lässt sich durch Einrichtung, Hörprobe und lange Läufe führen. Die Anleitung dafür steht am Ende dieser Datei.
 
 ## Bekannte Grenzen
@@ -119,6 +120,32 @@ Optionen:
 Eingabe: .txt direkt | .md .docx .odt .epub über pandoc | .pdf über werkzeuge/hoerfassung.py
 ```
 
+### Sofort sprechen statt vorlesen
+
+Für kurze Texte, die gleich hörbar sein sollen, etwa die Antworten eines KI-Assistenten, gibt es `sprechen.sh`. Es schreibt keine MP3, sondern spricht direkt aus dem Lautsprecher:
+
+```bash
+./sprechen.sh "Ich bin fertig, die Tests laufen."   # sprechen, kehrt sofort zurück
+echo "Text" | ./sprechen.sh -v dozent -t 1.1       # Text von stdin, andere Stimme
+./sprechen.sh --lauter 8 "Auch bei Musik hörbar."   # 8 dB lauter, mit Limiter
+./sprechen.sh --warten "Probe."                    # warten und Zeiten als JSON zeigen
+./sprechen.sh --stopp                              # Ausgabe abbrechen, Warteschlange leeren
+./sprechen.sh --status                             # Zustand, Ladezeit, letzter Auftrag
+./sprechen.sh --beenden
+```
+
+Der erste Aufruf startet im Hintergrund einen Dienst (`werkzeuge/sprechdienst.py`), der das Modell geladen hält und über einen Unix-Socket Aufträge annimmt. Er teilt den Text in Sätze und erzeugt den nächsten, während der vorige klingt. Nach 20 Minuten ohne Auftrag beendet er sich und gibt den Speicher frei. Stimmen, Tempo und Atem-Absenkung sind dieselben wie bei `vorlesen.sh`, ebenso die Prüfung je Stück; ein Stück, das zweimal misslingt, wird übersprungen statt den Auftrag abzubrechen. Das Protokoll des Dienstes steht in `~/Library/Logs/hoerbuch-generator/sprechdienst.log`.
+
+**Lautstärke:** Die Stimmen liegen bei rund −21 LUFS (Lautheit nach EBU R 128), Musik bei Streamingdiensten bei rund −14 LUFS. Neben Musik geht die Stimme deshalb unter. `--lauter DB` hebt sie um 0 bis 15 dB an, ein Limiter hält die Spitzen bei −1,5 dBFS. Mit `--lauter 8` lag `marketing.wav` bei −14 LUFS (gemessen am 26.11.2026). Ohne die Option bleibt der Pegel wie erzeugt. Eine Kurzform gibt es nicht, weil `-l` bei `vorlesen.sh` die Stimmen auflistet.
+
+**Mehrere Aufrufer:** Nutzen mehrere Sitzungen eines Assistenten denselben Dienst, gibt jede mit `--quelle ID` eine Kennung mit, beim Sprechen wie beim Stoppen. `--stopp --quelle ID` bricht dann nur die Aufträge dieser Sitzung ab, die Antworten der anderen laufen weiter. `--stopp` ohne `--quelle` bricht alles ab. Mit `--ansage "Aus Projekt X."` stellt der Dienst diesen Satz voran, wenn zuletzt eine andere Quelle sprach; so hört man, von wem die Antwort kommt.
+
+**Claude Code:** Fertig angebunden ist der Dienst an Claude Code. Mit `/sprechen` hängt Claude jeder Antwort eine kurze, für das Ohr geschriebene Fassung an, und zwei Hooks geben sie an `sprechen.sh`. Hook-Skript, Command und Einrichtung: [integrationen/claude-code/](integrationen/claude-code/README.md).
+
+Aus einer macOS-Sandbox heraus (etwa aus dem Shell-Werkzeug eines KI-Agenten) läuft der Dienst nicht: Dort fehlen Metal und Unix-Sockets. Ein Hook oder ein Terminal startet ihn außerhalb.
+
+**Ganze Sätze:** Für ein einzelnes Wort liefert das Modell oft kein Audio. `"Probe."` blieb im Test stumm, und `--warten` meldete `"ausgelassen": 1`; `"Der Gesprächsmodus ist an."` war nach knapp zwei Sekunden zu hören (gemessen am 26.11.2026 auf einem Mac mini M4 Pro, Dienst schon geladen).
+
 ## Was beim Vorlesen passiert
 
 1. **Hörfassung (nur PDF):** `werkzeuge/hoerfassung.py` holt den Fließtext aus dem PDF und bereitet ihn auf, wie unter [Funktionen](#funktionen) beschrieben. Die Hörfassung landet als `<name>_hoerfassung.txt` neben dem PDF. **Liegt diese Datei schon dort, nutzt `vorlesen.sh` sie unverändert.** So bleiben Korrekturen von Hand erhalten. Zum Neuerzeugen die Datei löschen.
@@ -166,15 +193,18 @@ Dieselbe Beschreibung ergibt bei jedem Lauf eine etwas andere Stimme; exakt ist 
 
 ```
 vorlesen.sh                 Text oder PDF -> MP3; das Einzige, was man zum Vertonen aufruft
+sprechen.sh                 kurzen Text sofort sprechen, über den Sprechdienst
 einrichten.sh               legt die Python-Umgebung .venv an
 requirements.txt            getestete Paketversionen
 stimmen/<name>.wav, .txt    Stimmen: Aufnahme und gesprochener Text
 werkzeuge/qwen.py           Vertonung in Stücken, mit Prüfung und zweitem Versuch je Stück
+werkzeuge/sprechdienst.py   Dienst mit geladenem Modell: Satz für Satz in den Lautsprecher
 werkzeuge/atem.py           Atemzüge erkennen und absenken; auch einzeln für fertige Dateien
 werkzeuge/hoerfassung.py    PDF oder Text -> vorlesbarer Text
 werkzeuge/pdf_zu_text.py    Fließtext aus PDF (PyMuPDF, für Scans Tesseract)
 werkzeuge/pruefen.py        Problemstellen finden, Länge und Rechenzeit schätzen
-tests/                      Test-PDF und erwartete Hörfassung für hoerfassung.py und pruefen.py
+integrationen/claude-code/  Gesprächsmodus für Claude Code: Hook-Skript, /sprechen, Anleitung
+tests/                      Test-PDF und erwartete Hörfassung; Sprechdienst und Hook-Skript ohne Modell
 ```
 
 ## Wie geprüft wurde
@@ -186,6 +216,8 @@ Eine Spracherkennung schreibt aber oft die richtige Schreibweise zurück, auch w
 Auf einem MacBook Pro M1 mit macOS 15 liefen außerdem die Einrichtung ohne uv (mit Python 3.12 aus Homebrew), eine Hörprobe und ein Text mit 5 100 Wörtern, der nach der Hälfte abgebrochen und fortgesetzt wurde. Nicht ausprobiert sind Macs mit M2 und M3, echte Scans und erzählende Texte wie Romane.
 
 Die Hörfassung prüft zusätzlich ein automatischer Test bei jeder Änderung. Ein selbst erzeugtes Test-PDF läuft durch `hoerfassung.py` und `pruefen.py`. Beide Ausgaben müssen Zeichen für Zeichen den Dateien in `tests/erwartet/` entsprechen. Die Vertonung prüft der Test nicht, weil sie nur auf Apple Silicon läuft.
+
+Für den Sprechdienst prüfen die Tests alles außer der Sprache selbst: wie der Text in Stücke zerfällt, wie der Dienst über den Socket antwortet und falsche Anfragen abweist, dass ein Stopp nur die eigene Quelle trifft und dass das Hook-Skript für Claude Code nie mit einem Fehlercode endet, der eine Eingabe sperren würde. Sie laufen ohne Modell und bis auf zwei, die ffmpeg oder mlx-audio brauchen, auch in der CI. Gesprochen hat der Dienst bisher nur auf dem Mac mini M4 Pro; auf dem MacBook Pro M1 ist er nicht ausprobiert.
 
 ## Alternativen
 
@@ -250,6 +282,14 @@ Dann in einer Runde fragen, jeweils mit Empfehlung:
    - **Soll der Lauf später starten** (etwa nachts), zuerst prüfen, ob der Mac in den Ruhezustand geht (`pmset -g | grep sleep`), und eine Lösung vorschlagen, die nicht von deiner Session abhängt. In der Nacht der Zeitumstellung (letzter Sonntag im Oktober) gibt es 02:00 bis 03:00 Uhr zweimal.
 5. **Ergebnis prüfen:** Die Länge der MP3 (`ffprobe -v error -show_entries format=duration -of csv=p=0 <datei>.mp3`, Sekunden) mit der Schätzung von `pruefen.py` vergleichen. Liegt sie deutlich darunter, fehlt vermutlich Text. Steht eine Spracherkennung zur Verfügung, ein paar Minuten zurückschreiben und gegen den Text halten. Einen Ausschnitt zum Anhören schneiden: `ffmpeg -ss 600 -t 60 -i <datei>.mp3 -c copy ausschnitt.mp3`.
 6. **Abschluss:** Länge und Ort der MP3 nennen und offene Punkte auflisten, etwa Stellen, die der Nutzer gegenhören sollte.
+
+### Gesprächsmodus einrichten
+
+Will der Nutzer Antworten gesprochen hören statt ein Hörbuch zu erzeugen, gilt die Anleitung in [integrationen/claude-code/README.md](integrationen/claude-code/README.md). Dabei:
+
+- **Die Hooks in `~/.claude/settings.json` liegen außerhalb dieses Ordners.** Den Eintrag erst zeigen und nur mit Zustimmung des Nutzers eintragen; bestehende Hooks bleiben stehen. Pfade absolut, mit dem Ordner des Generators.
+- **`sprechen.sh` nicht aus deinem eigenen Shell-Werkzeug starten,** wenn es in einer Sandbox läuft: Dort fehlen Metal und Unix-Sockets, und ein so gestarteter Dienst meldet nur Fehler. Den ersten Start übernimmt der Hook oder der Nutzer im Terminal (`<ordner>/sprechen.sh --warten "Probe."`). Lief der Dienst schon aus der Sandbox, beendet ihn `<ordner>/sprechen.sh --beenden` im Terminal.
+- **Nach einem Update des Generators** `<ordner>/sprechen.sh --beenden`; der nächste Auftrag lädt dann den neuen Stand.
 
 ### Meldungen und was zu tun ist
 

@@ -131,7 +131,9 @@ main() {
     [[ -f "${ORDNER}/stimmen/${stimme}.wav" ]] || { fehler "Stimme '${stimme}' fehlt; vorhanden: $(stimmen_liste | tr '\n' ' ')"; exit 1; }
     awk -v t="${tempo}" 'BEGIN { exit !(t+0 >= 0.5 && t+0 <= 2.0) }' || { fehler "Tempo ${tempo} liegt nicht zwischen 0.5 und 2.0"; exit 1; }
 
-    TMP_DIR="$(mktemp -d -t vorlesen.XXXXXX)" || { fehler "Temp-Verzeichnis nicht anlegbar"; exit 1; }
+    # Ausdrücklich unter TMPDIR: macOS-mktemp legt -t unter /var/folders an und übergeht
+    # TMPDIR, was in einer Sandbox mit eigenem Temp-Verzeichnis scheitert
+    TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vorlesen.XXXXXX")" || { fehler "Temp-Verzeichnis nicht anlegbar"; exit 1; }
 
     local rc=0 src
     for src in "${eingaben[@]}"; do

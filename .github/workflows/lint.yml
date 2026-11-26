@@ -30,7 +30,7 @@ jobs:
       # Die Werkzeuge importieren MLX, das es nur auf macOS gibt. Auf einem
       # Linux-Runner lässt sich deshalb nur die Syntax prüfen, nicht das Verhalten.
       - name: Validate Python syntax
-        run: python -m compileall -q werkzeuge tests
+        run: python -m compileall -q werkzeuge tests integrationen
 
   hoerfassung:
     name: Hörfassung (Test-PDF)
@@ -45,9 +45,15 @@ jobs:
           python-version: '3.12'
 
       # Die Hörfassung braucht nur PyMuPDF, die Vertonung (MLX) bleibt außen vor.
-      # Die Version kommt aus requirements.txt, damit sie nur dort steht.
-      - name: Install PyMuPDF
-        run: pip install "$(grep -E '^pymupdf==' requirements.txt)"
+      # numpy und soundfile lassen die Tests des Sprechdienstes (Satzteilung, Protokoll,
+      # Stopp je Quelle) mitlaufen; ohne sie überspringen sie sich. Der Job behält seinen
+      # Namen, damit eine Pflichtprüfung auf ihn nicht ins Leere zeigt. Die Versionen
+      # kommen aus requirements.txt, damit sie nur dort stehen.
+      - name: Install PyMuPDF, numpy, soundfile
+        run: |
+          pip install "$(grep -E '^pymupdf==' requirements.txt)" \
+                      "$(grep -E '^numpy==' requirements.txt)" \
+                      "$(grep -E '^soundfile==' requirements.txt)"
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
@@ -60,11 +66,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning --shell=bash vorlesen.sh einrichten.sh
+        run: shellcheck --severity=warning --shell=bash vorlesen.sh sprechen.sh einrichten.sh
 
       - name: Validate Bash syntax
         run: |
           bash -n vorlesen.sh
+          bash -n sprechen.sh
           bash -n einrichten.sh
 
   requirements:
