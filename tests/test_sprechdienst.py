@@ -327,8 +327,13 @@ class Liefern(unittest.TestCase):
     def test_stopp_loest_ein_haengendes_senden(self):
         # Liest der Aufrufer nicht mehr (Netz weg, Player haengt), wartete sendall bis
         # LIEFERN_TIMEOUT, und der Sprecher stuende so lange auch fuer alle anderen still
+        import socket
         self.dienst_seite.settimeout(30)
-        stueck = self.np.zeros(self.rate * 2, self.np.float32)  # 96 KB, mehr als der Puffer
+        # Kleine Puffer und 10 s Ton (480 KB): Unter Linux fasst ein socketpair sonst rund
+        # 200 KB, und 96 KB liefen durch, ohne dass sendall je wartete (CI zu v0.4.0)
+        self.dienst_seite.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        self.aufrufer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        stueck = self.np.zeros(self.rate * 10, self.np.float32)
         auftrag = self._auftrag()
         auftrag.quelle = "sitzung-a"
         self.dienst.aktuell = auftrag
