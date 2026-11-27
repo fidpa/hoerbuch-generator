@@ -60,7 +60,14 @@ Er gibt den Abschnitt „Modus einschalten“ aus `sprechen.md` als Kontext aus,
 je Sitzung. SessionStart feuert auch beim Fortsetzen einer Sitzung (`--resume`, `--continue`),
 nach `/clear` und nach dem Kompaktieren; ein vorher abgeschalteter Modus ist danach wieder an.
 Es spricht dann jede Sitzung, auch Sitzungen, die im Hintergrund arbeiten; der Hook erkennt sie
-nicht.
+nicht. Startet ein Dienst Claude ohne Nutzer und lädt dabei die Einstellungen des Nutzers (ein Bot
+über das Agent SDK mit `settingSources: ["user", …]`, ein zeitgesteuertes `claude -p` ohne
+`--setting-sources`), setzt er `SPRECHEN_AUS=1`. Dann tun alle Hooks dieses Skripts nichts, etwa
+in einer systemd-Unit mit `Environment=SPRECHEN_AUS=1`. Claude Code reicht seine Umgebung an die
+Hooks weiter ([Hook-Doku](https://code.claude.com/docs/en/hooks.md#common-input-fields)). Setzt ein
+Bot im Agent SDK die Option `env` selbst, ersetzt sie die Umgebung ganz; dann muss `SPRECHEN_AUS`
+dort stehen. Lädt der Dienst die Einstellungen des Nutzers gar nicht (`--setting-sources project`),
+erreicht ihn kein Hook des Nutzers, er verliert dann aber auch dessen Berechtigungen und MCP-Server.
 
 **Optional: Ansage, wenn Claude wartet.** Wartet Claude auf eine Freigabe, gibt es keine Antwort
 und damit nichts zu sprechen. Ein Notification-Hook sagt dann „Claude wartet auf deine
@@ -130,6 +137,7 @@ oder unter `env` in den Einstellungen von Claude Code:
 | `SPRECHEN_TEMPO` | `1.1` | Sprechtempo, 0.5 bis 2.0 |
 | `SPRECHEN_LAUTER` | `8` | Anhebung in dB, 0 bis 15, mit Limiter |
 | `SPRECHEN_UNTERBRECHEN` | leer | `1`: jede neue Eingabe bricht die laufende Ausgabe ab, wie bis v0.6.1 |
+| `SPRECHEN_AUS` | leer | `1`: alle Hooks tun nichts, für Dienste ohne Nutzer: kein Modus von Anfang an, kein Ton, kein Stoppwort |
 | `SPRECHEN_ENTFERNT`, `SPRECHEN_ENTFERNT_REPO`, `SPRECHEN_PLAYER` | leer | Fernbetrieb, siehe unten |
 | `SPRECHEN_GERAETE`, `SPRECHEN_LEERLAUF` | leer, `1800` | Gerätewahl, siehe unten |
 
@@ -274,6 +282,7 @@ Exit-Code nicht. Grenze: Hooks in den Einstellungen eines Projekts (`.claude/set
 | Fehlerbild | Ursache | Lösung |
 |---|---|---|
 | Keine Ansage, wenn Claude auf eine Freigabe wartet | Notification-Hook fehlt, die Sitzung ist nicht im Gesprächsmodus, oder die Freigabe kam vor Ablauf von rund sechs Sekunden | `pruefen`; den Grund nennt die Zeile `Hinweis … ohne Ton` auf stderr des Hooks. Im Fernbetrieb braucht der Hook dieselben Variablen wie der Stop-Hook |
+| Ein Bot oder ein zeitgesteuerter Lauf spricht, oder seine Antworten enden mit `<!-- sprechen: … -->` | Der Dienst lädt die Einstellungen des Nutzers, und der SessionStart-Hook schaltet den Modus ein | `SPRECHEN_AUS=1` in der Umgebung des Dienstes, etwa `Environment=` in seiner systemd-Unit; danach den Dienst neu starten |
 | Kein Ton, `./sprechen.sh --status` meldet `"zustand": "aus"` | Hooks fehlen oder greifen nicht | Hook-Einträge prüfen; Protokoll `~/Library/Logs/hoerbuch-generator/sprechdienst.log` |
 | `Modell nicht ladbar: … No Metal device available` | Der Dienst wurde aus einer Sandbox gestartet | `./sprechen.sh --beenden` im Terminal; den nächsten Start übernimmt der Hook |
 | Kein Ton, obwohl der Dienst läuft | Die Antwort trägt keine Sprechmarke | `/sprechen` erneut aufrufen |

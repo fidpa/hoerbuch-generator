@@ -6,6 +6,18 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.9.0] - 2026-11-27: Gesprächsmodus für Dienste ohne Nutzer abschaltbar
+
+### Hinzugefügt
+
+- **`SPRECHEN_AUS=1`:** Startet ein Dienst Claude ohne Nutzer, etwa ein Bot über das Agent SDK
+  oder ein zeitgesteuertes `claude -p`, und lädt dabei die Einstellungen des Nutzers, liefen
+  bisher auch dessen Hooks: Der SessionStart-Hook schaltete den Gesprächsmodus ein, die Antworten
+  des Dienstes endeten mit einer Sprechmarke, der Stop-Hook sprach sie auf dem Gerät des Nutzers,
+  und ein „Psst“ in der Eingabe des Dienstes erreichte Claude nicht. Mit `SPRECHEN_AUS=1` in
+  der Umgebung des Dienstes tun alle Hooks dieses Skripts nichts, die übrigen Sitzungen sprechen
+  weiter. `pruefen` meldet die Variable als Hinweis.
+
 ## [0.8.0] - 2026-11-27: Ansage, wenn Claude wartet, und eine Prüfung der Einrichtung
 
 ### Hinzugefügt
@@ -228,6 +240,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.9.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.9.0
 [0.8.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.8.0
 [0.7.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.7.1
 [0.7.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.7.0

@@ -30,6 +30,10 @@ Einstellungen über Umgebungsvariablen:
                      Musik bei Streamingdiensten, damit sie daneben hörbar bleiben.
     SPRECHEN_UNTERBRECHEN  1: jede neue Eingabe bricht die laufende Ausgabe ab (bis v0.6.1
                      das Verhalten ohne Einstellung)
+    SPRECHEN_AUS     1: alle Hooks tun nichts, für Dienste, die Claude ohne Nutzer starten
+                     (Bots, zeitgesteuerte Läufe) und dabei die Einstellungen des Nutzers laden.
+                     Kein Modus von Anfang an, kein Ton, kein Stoppwort; die Eingabe geht
+                     unverändert an Claude
 
 Abbrechen: Eine neue Eingabe lässt die laufende Antwort zu Ende sprechen, die nächste reiht
 sich dahinter ein. Besteht eine Eingabe nur aus einem Stoppwort (STOPPWORTE, etwa „Psst“),
@@ -701,8 +705,13 @@ def pruefen() -> int:
     # Wie beim Stop-Hook: Claude Code gibt ihm seine Umgebung samt env aus settings.json, das
     # Präfix vor dem Befehl gilt vor beidem. Die Umgebung hier steht für die von Claude Code
     os.environ.update({**umgebung, **praefixe.get("Stop", {})})
+    aus = os.environ.get("SPRECHEN_AUS") == "1"
     for name in sorted(k for k in os.environ if k.startswith("SPRECHEN_")):
-        melden("Variable", f"{name}={os.environ[name]}")
+        if not (aus and name == "SPRECHEN_AUS"):  # dafür folgt der Hinweis
+            melden("Variable", f"{name}={os.environ[name]}")
+    if aus:
+        melden("Variable", "SPRECHEN_AUS=1: alle Hooks tun nichts, gedacht für Dienste ohne Nutzer",
+               hinweis=True)
 
     hier = _version_hier()
     melden("Version", f"{hier} (dieser Klon)")
@@ -794,6 +803,12 @@ def main() -> int:
         eingabe = {}
     if not isinstance(eingabe, dict):
         eingabe = {}
+
+    # Ein Dienst ohne Nutzer, der die Einstellungen des Nutzers lädt: kein Modus, kein Ton, und
+    # ein „Psst“ in seiner Eingabe geht an Claude. stdin ist gelesen, damit Claude Code beim
+    # Schreiben nicht auf ein geschlossenes Rohr trifft
+    if os.environ.get("SPRECHEN_AUS") == "1" and args.ereignis != "abspielen":
+        return 0
 
     if args.ereignis == "start":
         try:

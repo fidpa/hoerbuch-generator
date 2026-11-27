@@ -88,6 +88,25 @@ class Hook(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(aufruf, "-v dozent -t 1.2 --lauter 12 -\nHallo.")
 
+    def test_sprechen_aus_schaltet_jeden_hook_ab(self):
+        # Ein Dienst wie ein Bot setzt SPRECHEN_AUS=1 und lädt trotzdem die Hooks des Nutzers
+        aus = {"SPRECHEN_AUS": "1"}
+        for ereignis, eingabe in (
+                ("stop", {"last_assistant_message": "<!-- sprechen: Hallo. -->"}),
+                ("notification", {"notification_type": "permission_prompt"}),
+                ("start", {}),
+                ("prompt", {"prompt": "Psst", "session_id": "abc"})):
+            lauf = subprocess.run([sys.executable, str(SKRIPT), ereignis],
+                                  input=json.dumps(eingabe), text=True, capture_output=True,
+                                  env={"HOERBUCH_GENERATOR": str(self.tmp),
+                                       "PATH": "/usr/bin:/bin", **aus})
+            self.assertEqual((lauf.returncode, lauf.stdout), (0, ""), ereignis)
+            self.assertFalse(self.protokoll.exists(), ereignis)
+        # Nur "1" schaltet ab, wie bei SPRECHEN_UNTERBRECHEN
+        rc, aufruf = self._lauf("stop", {"last_assistant_message": "<!-- sprechen: Hallo. -->"},
+                                {"SPRECHEN_AUS": "0"})
+        self.assertEqual((rc, aufruf), (0, "-v marketing -t 1.1 --lauter 8 -\nHallo."))
+
     def test_stop_ohne_marke_ruft_nichts_auf(self):
         rc, aufruf = self._lauf("stop", {"last_assistant_message": "Nur Text."})
         self.assertEqual(rc, 0)
@@ -629,6 +648,13 @@ class Pruefen(unittest.TestCase):
         self.assertIn("Gerät     buero: Leerlauf 12 s, Player ffmpeg", aus)
         self.assertIn("Notification fehlt (optional)", aus)
         self.assertTrue(aus.rstrip().endswith("Ergebnis: alles da"), aus)
+
+    def test_sprechen_aus_ist_ein_hinweis(self):
+        self._standard()
+        rc, aus = self._pruefen(SPRECHEN_AUS="1")
+        self.assertEqual(rc, 0, aus)
+        self.assertIn("Hinweis: SPRECHEN_AUS=1: alle Hooks tun nichts", aus)
+        self.assertNotIn("Variable  SPRECHEN_AUS=1\n", aus)  # nur einmal, als Hinweis
 
     def test_schlafendes_geraet_ist_ein_hinweis(self):
         self._standard("buero schlaeft")
