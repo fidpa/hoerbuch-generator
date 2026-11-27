@@ -33,7 +33,8 @@ dieses ssh-Ziels (sprechen.sh --liefern), und ein lokaler Player spielt den Ton 
     SPRECHEN_ENTFERNT       ssh-Ziel, etwa ein Host aus ~/.ssh/config
     SPRECHEN_ENTFERNT_REPO  Ort dieses Repos dort (Standard: derselbe Pfad unter ~ wie hier)
     SPRECHEN_PLAYER         Player-Befehl, der 16-Bit-PCM (24 kHz, mono) von stdin spielt;
-                            sonst der erste von paplay, pw-play, aplay, ffplay
+                            sonst der erste von paplay, pw-play, aplay, ffmpeg (nur macOS,
+                            über AudioToolbox), ffplay
 Der Stop-Hook übergibt die Wiedergabe einem eigenen Hintergrundprozess und kehrt sofort
 zurück. Eine Sperre unter XDG_RUNTIME_DIR (sonst ~/.cache) hält mehrere Sitzungen dieses
 Geräts in der Reihe; der Prompt-Hook beendet die Wiedergabe der eigenen Sitzung hier und
@@ -47,7 +48,8 @@ einem anderen Mac läuft und nur die Oberfläche hier ist (Terminal per ssh, T3 
                        Linux mit GNOME: Mutter IdleMonitor) und spielt auf dem zuletzt benutzten.
     SPRECHEN_LEERLAUF  Sekunden; ist jedes Gerät länger unbenutzt, bleibt die Antwort stumm
                        (Standard: 1800). Dann wird woanders gearbeitet, etwa am Handy.
-Auf einem anderen Gerät spielt paplay oder ffplay, aufgerufen über ssh. Ohne SPRECHEN_ENTFERNT
+Auf einem anderen Gerät spielt paplay, unter macOS ffmpeg über AudioToolbox, sonst ffplay,
+aufgerufen über ssh. Ohne SPRECHEN_ENTFERNT
 rechnet dieses Gerät selbst; fällt die Wahl auf "hier", spielt der Dienst wie gewohnt.
 
 Hooks laufen außerhalb einer Bash-Sandbox; nur dort stehen Metal und Audio zur Verfügung.
@@ -95,9 +97,14 @@ PLAYER = [
     ["paplay", "--raw", "--rate=24000", "--channels=1", "--format=s16le"],
     ["pw-play", "--raw", "--rate", "24000", "--channels", "1", "--format", "s16", "-"],
     ["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1"],
+    # Nur macOS: ffmpeg direkt über AudioToolbox. ffplay verwirft dort den Anfang eines Stroms,
+    # der erst nach und nach kommt (gemessen am 27.11.2026: die ersten Wörter fehlten)
+    ["ffmpeg", "-v", "error", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "-",
+     "-f", "audiotoolbox", "-"],
     ["ffplay", "-nodisp", "-nostats", "-autoexit", "-loglevel", "error",
      "-f", "s16le", "-ar", "24000", "-ch_layout", "mono", "-"],
 ]
+NUR_MACOS = "audiotoolbox"
 # Gerätewahl: "hier" ist dieses Gerät, alles andere ein ssh-Ziel
 HIER = "hier"
 LEERLAUF_MAX = 1800
@@ -116,9 +123,11 @@ FERN_PLAYER = (
     'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; '
     "if command -v paplay >/dev/null 2>&1; then "
     "exec paplay --raw --rate=24000 --channels=1 --format=s16le; "
+    'elif [ "$(uname)" = Darwin ] && command -v ffmpeg >/dev/null 2>&1; then '
+    "exec ffmpeg -v error -f s16le -ar 24000 -ac 1 -i - -f audiotoolbox -; "
     "elif command -v ffplay >/dev/null 2>&1; then "
     "exec ffplay -nodisp -nostats -autoexit -loglevel error -f s16le -ar 24000 -ch_layout mono -; "
-    "else echo 'kein Player (paplay, ffplay)' >&2; exit 127; fi")
+    "else echo 'kein Player (paplay, ffmpeg, ffplay)' >&2; exit 127; fi")
 
 log = logging.getLogger("claude_sprechen")
 
@@ -194,7 +203,8 @@ def player_befehl() -> list[str] | None:
     eigener = os.environ.get("SPRECHEN_PLAYER")
     if eigener:
         return shlex.split(eigener)
-    return next((p for p in PLAYER if shutil.which(p[0])), None)
+    return next((p for p in PLAYER if shutil.which(p[0])
+                 and (NUR_MACOS not in p or sys.platform == "darwin")), None)
 
 
 def rechen_befehl(args: list[str]) -> list[str]:
@@ -291,7 +301,7 @@ def abspielen(auftrag: dict) -> int:
         player = player_befehl() if geraet in (None, HIER) else ["ssh", *SSH_OPTIONEN, geraet,
                                                                  FERN_PLAYER]
         if not player:
-            log.error("kein Player (paplay, pw-play, aplay, ffplay, SPRECHEN_PLAYER)")
+            log.error("kein Player (paplay, pw-play, aplay, ffmpeg, ffplay, SPRECHEN_PLAYER)")
             return 1
         with open(ordner / "wiedergabe.lock", "w") as sperre:
             # Zwei Sitzungen auf diesem Gerät: Der Mac liefert schneller, als der Player

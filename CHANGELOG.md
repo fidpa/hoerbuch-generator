@@ -6,6 +6,18 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.6.1] - 2026-11-27: Antworten auf macOS-Geräten vom ersten Wort an
+
+### Behoben
+
+- **Anfang fehlte auf macOS-Geräten:** Im Fernbetrieb und bei der Gerätewahl verwarf `ffplay`
+  unter macOS die ersten Sekunden, weil der Ton Satz für Satz nach und nach ankommt; zu hören
+  waren Antworten erst ab dem dritten oder vierten Wort, auf Lautsprechern wie auf Kopfhörern.
+  Unter macOS spielt jetzt `ffmpeg` direkt über AudioToolbox, `ffplay` bleibt der Rückfall.
+  Nach einer neuen Eingabe klingt die Antwort dort auch kürzer nach, rund drei statt fünf
+  Sekunden (gemessen auf einem Mac mini mit 20 Sekunden Ton, Zuleitung nach zwei Sekunden
+  getrennt).
+
 ## [0.6.0] - 2026-11-27: Gesprächsmodus von Anfang an, ohne /sprechen
 
 ### Hinzugefügt
@@ -166,6 +178,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.6.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.6.1
 [0.6.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.6.0
 [0.5.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.5.0
 [0.4.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.4.0

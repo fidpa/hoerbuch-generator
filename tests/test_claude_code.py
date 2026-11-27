@@ -231,6 +231,19 @@ class Fernbetrieb(unittest.TestCase):
             umgebung.pop("SPRECHEN_PLAYER", None)
             self.assertEqual(claude_sprechen.player_befehl()[0], "aplay")
 
+    def test_ffmpeg_ueber_audiotoolbox_nur_auf_macos(self):
+        import claude_sprechen
+        for name in ("ffmpeg", "ffplay"):
+            datei = self.bin / name
+            datei.write_text("#!/bin/sh\n", encoding="utf-8")
+            datei.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": str(self.bin)}), \
+                mock.patch.dict(os.environ, {}, clear=False) as umgebung:
+            umgebung.pop("SPRECHEN_PLAYER", None)
+            for plattform, erwartet in (("darwin", "ffmpeg"), ("linux", "ffplay")):
+                with mock.patch.object(claude_sprechen.sys, "platform", plattform):
+                    self.assertEqual(claude_sprechen.player_befehl()[0], erwartet, plattform)
+
 
 class Sitzungsbeginn(unittest.TestCase):
     """start: Der SessionStart-Hook gibt die Regeln aus sprechen.md als Kontext aus."""

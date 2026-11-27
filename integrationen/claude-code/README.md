@@ -131,9 +131,11 @@ Erwartet wird `Device(gpu, 0)`.
 1. Dieses Repo klonen, nur für das Hook-Skript; `./einrichten.sh` ist hier nicht nötig. Das
    Skript braucht Python ab 3.9 und nur die Standardbibliothek.
 2. Einen Player bereithalten. Das Skript nimmt den ersten vorhandenen von `paplay`, `pw-play`,
-   `aplay` und `ffplay`, oder den Befehl aus `SPRECHEN_PLAYER`, der 16-Bit-PCM mit 24 kHz mono
-   von stdin spielt. `ffplay` braucht FFmpeg 5.1 oder neuer (Option `-ch_layout`). Geprüft
-   sind `paplay` unter Linux und `ffplay` 9.1 unter macOS; `pw-play` und `aplay` sind
+   `aplay`, `ffmpeg` (nur unter macOS, Ausgabe über AudioToolbox) und `ffplay`, oder den
+   Befehl aus `SPRECHEN_PLAYER`, der 16-Bit-PCM mit 24 kHz mono von stdin spielt. `ffplay`
+   braucht FFmpeg 5.1 oder neuer (Option `-ch_layout`) und verwirft unter macOS die ersten
+   Sekunden eines Stroms, der erst nach und nach ankommt; deshalb dort zuerst `ffmpeg`. Geprüft
+   sind `paplay` unter Linux und `ffmpeg` 9.1 unter macOS; `pw-play` und `aplay` sind
    ungeprüft (Stand 27.11.2026).
 3. Die Hooks wie oben eintragen, mit `python3` statt `.venv/bin/python` und den Variablen davor:
 
@@ -182,11 +184,13 @@ verzögert die Antwort um höchstens sechs Sekunden.
 | Claude Code auf dem Mac mit MLX, Ton auch auf einem Notebook | `SPRECHEN_GERAETE='hier macbook'` |
 | Claude Code auf einem Server ohne Ton, ein Mac rechnet | `SPRECHEN_ENTFERNT=<MAC>` und `SPRECHEN_GERAETE='macbook <MAC>'` |
 
-Auf dem gewählten Gerät spielt `paplay` oder `ffplay` (Homebrew), aufgerufen über ssh; ein
-Repo-Klon ist dort nicht nötig. Fällt die Wahl auf `hier` und rechnet dieses Gerät selbst,
-spielt der Dienst wie ohne Gerätewahl. Die Wahl steht mit den gemessenen Zeiten in
-`wiedergabe.log` (Ordner wie oben). Die Eingabe der eigenen Sitzung bricht die Wiedergabe auch
-auf dem anderen Gerät ab; was der Player dort schon gepuffert hat, klingt noch aus.
+Auf dem gewählten Gerät spielt `paplay`, unter macOS `ffmpeg` aus Homebrew über AudioToolbox
+(sonst `ffplay`), aufgerufen über ssh; ein Repo-Klon ist dort nicht nötig. Fällt die Wahl auf
+`hier` und rechnet dieses Gerät selbst, spielt der Dienst wie ohne Gerätewahl. Die Wahl steht
+mit den gemessenen Zeiten in `wiedergabe.log` (Ordner wie oben). Die Eingabe der eigenen
+Sitzung bricht die Wiedergabe auch auf dem anderen Gerät ab; was der Player dort schon
+gepuffert hat, klingt noch aus, bei `ffmpeg` unter macOS rund drei Sekunden, bei `ffplay` rund
+fünf (gemessen am 27.11.2026).
 
 ## Am Handy: Datei statt Ton (`/sprechen datei`)
 
