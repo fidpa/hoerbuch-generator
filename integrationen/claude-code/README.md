@@ -10,7 +10,7 @@ zu Ende sprechen; „Psst“ als einzige Eingabe bricht sie ab.
 | Teil | Datei | Aufgabe |
 |---|---|---|
 | Sprechdienst | `sprechen.sh`, `werkzeuge/sprechdienst.py` | hält das Modell geladen, spricht Satz für Satz, Stopp je Sitzung |
-| Hook-Skript | `claude_sprechen.py` | Stop: Sprechmarke aus der Antwort an `sprechen.sh`, auf Wunsch über ssh und an das zuletzt benutzte Gerät; UserPromptSubmit: `--stopp` bei einem Stoppwort; SessionStart (optional): Modus von Anfang an |
+| Hook-Skript | `claude_sprechen.py` | Stop: Sprechmarke aus der Antwort an `sprechen.sh`, auf Wunsch über ssh und an das zuletzt benutzte Gerät; UserPromptSubmit: `--stopp` bei einem Stoppwort; SessionStart (optional): Modus von Anfang an; Notification (optional): Ansage, wenn Claude auf eine Freigabe wartet; `pruefen`: Einrichtung prüfen |
 | Command | `sprechen.md` | `/sprechen` schaltet den Modus ein, `/sprechen datei` auf Audiodateien in der Antwort um, `/sprechen aus` wieder aus |
 
 Im Gesprächsmodus schreibt Claude ans Ende jeder Antwort einen HTML-Kommentar
@@ -61,6 +61,29 @@ je Sitzung. SessionStart feuert auch beim Fortsetzen einer Sitzung (`--resume`, 
 nach `/clear` und nach dem Kompaktieren; ein vorher abgeschalteter Modus ist danach wieder an.
 Es spricht dann jede Sitzung, auch Sitzungen, die im Hintergrund arbeiten; der Hook erkennt sie
 nicht.
+
+**Optional: Ansage, wenn Claude wartet.** Wartet Claude auf eine Freigabe, gibt es keine Antwort
+und damit nichts zu sprechen. Ein Notification-Hook sagt dann „Claude wartet auf deine
+Freigabe.“, bei einem Formular eines MCP-Servers „Claude wartet auf deine Eingabe.“:
+
+```json
+"Notification": [{"matcher": "permission_prompt|elicitation_dialog|elicitation_url_dialog",
+  "hooks": [{"type": "command", "async": true,
+    "command": "<REPO>/.venv/bin/python <REPO>/integrationen/claude-code/claude_sprechen.py notification"}]}]
+```
+
+Im Fernbetrieb und mit Gerätewahl (unten) stehen dieselben Variablen davor wie beim Stop-Hook.
+Claude Code löst ihn aus, wenn eine Freigabe rund sechs Sekunden wartet; im Terminal schiebt jede
+Taste die Frist auf, in Oberflächen auf Basis des Agent SDK nicht
+([Hook-Doku](https://code.claude.com/docs/en/hooks.md#notification)). Der Hook spricht nur, wenn
+die Sitzung im Gesprächsmodus ist. Das liest er aus ihrem Transkript: Es zählt der letzte Aufruf
+von `/sprechen` oder der Kontext des SessionStart-Hooks. Nach `/sprechen aus` und `/sprechen
+datei` bleibt er still. Grenzen: Das Format des Transkripts ist nicht dokumentiert, und ändert es
+sich, bleibt die Ansage stumm. Den Hinweis nach 60 Sekunden ohne Eingabe (`idle_prompt`) spricht
+der Hook nicht, er folgte sonst auf jede gesprochene Antwort. Eine Rückfrage von Claude selbst
+(Werkzeug `AskUserQuestion`) kam in T3 Code als `permission_prompt` mit der Meldung „Claude needs
+your permission to use AskUserQuestion“, sechs Sekunden nach der Frage (gemessen am 27.11.2026);
+dafür sagt der Hook „Claude hat eine Frage an dich.“ Im Terminal ist das ungeprüft.
 
 **3. Command verlinken**, für alle Projekte oder nur für eines:
 
@@ -166,7 +189,7 @@ Erwartet wird `Device(gpu, 0)`.
 kehrt sofort zurück. Mehrere Sitzungen dieses Geräts sprechen nacheinander, eine Sperre unter
 `$XDG_RUNTIME_DIR/hoerbuch-generator/` (sonst `~/.cache/hoerbuch-generator/`) hält sie in der
 Reihe. Ein Stoppwort beendet die Wiedergabe der eigenen Sitzung hier sofort und stoppt den
-Auftrag auf dem Mac. Läuft für die Sitzung nichts, baut es keine Verbindung auf. Fehler der Wiedergabe stehen in `wiedergabe.log` im selben Ordner. Der Mac
+Auftrag auf dem Mac. Läuft für die Sitzung nichts, baut es keine Verbindung auf. Fehler der Wiedergabe stehen in `wiedergabe.log` im selben Ordner, jede Zeile mit Datum und Uhrzeit, dazu Auftrag, Beginn und Ende jeder Wiedergabe. Der Mac
 muss wach und erreichbar sein; ist er es nicht, bleibt es still, und die Sitzung läuft weiter.
 
 ## Ton auf dem Gerät, an dem du gerade arbeitest
@@ -216,10 +239,41 @@ Silicon). In einer Sandbox braucht `sprechen.sh` eine Ausnahme, weil Metal dort 
 Ablageordner sorgt dafür, dass der Aufruf mit Ausnahme nirgendwo sonst schreibt. Gemessen am
 27.11.2026: rund drei Sekunden für zwei Sätze bei geladenem Modell.
 
+## Einrichtung prüfen
+
+```bash
+python3 <REPO>/integrationen/claude-code/claude_sprechen.py pruefen
+```
+
+Auf jedem Gerät im Terminal, nicht aus einer Sandbox (dort scheitern ssh und der Socket des
+Dienstes). Der Befehl liest die Hook-Einträge aus `~/.claude/settings.json` und rechnet mit den
+Variablen, die der Stop-Hook sieht: die Umgebung des Terminals, darüber die `SPRECHEN_*`-Variablen
+unter `env`, darüber die vor dem Befehl des Stop-Hooks. Je Zeile meldet er:
+
+| Bereich | Inhalt |
+|---|---|
+| `Hooks` | welche Ereignisse dieses Skript aufrufen, Stop und UserPromptSubmit sind Pflicht; dazu Variablen, die zwischen den Hooks abweichen (siehe unten) |
+| `Variable` | die Einstellungen, mit denen der Stop-Hook läuft |
+| `Version` | Stand dieses Klons (`git describe`) |
+| `Rechnen` | mit `SPRECHEN_ENTFERNT`: ob ssh antwortet, Stand des Klons dort und Zustand des Dienstes; sonst der Dienst hier. `aus` ist kein Fehler, der erste Auftrag startet ihn |
+| `Player` | im Fernbetrieb der Player hier |
+| `Gerät` | je Gerät aus `SPRECHEN_GERAETE`: Leerlaufzeit und Player, oder dass ssh nicht antwortet. Ein schlafendes Gerät ist nur ein Hinweis, solange ein anderes antwortet |
+
+Verglichen wird je Variable zwischen den Hooks, die sie nutzen: `SPRECHEN_ENTFERNT` und
+`SPRECHEN_ENTFERNT_REPO` zwischen Stop, UserPromptSubmit und Notification (der Prompt-Hook braucht
+sie für den Stopp auf dem Mac), `SPRECHEN_GERAETE` und `SPRECHEN_LEERLAUF` zwischen Stop und
+Notification. Weichen sie ab, ist das ein Fehler. Weichen Stimme, Tempo oder Lautstärke zwischen
+Stop und Notification ab, ist das nur ein Hinweis.
+
+Fehlt etwas, steht `FEHLER:` in der Zeile, und der Befehl endet mit Exit 1; `Hinweis:` ändert den
+Exit-Code nicht. Grenze: Hooks in den Einstellungen eines Projekts (`.claude/settings.json`) und in
+`settings.local.json` liest der Befehl nicht; stehen sie nur dort, meldet er sie als fehlend.
+
 ## Fehlerbilder
 
 | Fehlerbild | Ursache | Lösung |
 |---|---|---|
+| Keine Ansage, wenn Claude auf eine Freigabe wartet | Notification-Hook fehlt, die Sitzung ist nicht im Gesprächsmodus, oder die Freigabe kam vor Ablauf von rund sechs Sekunden | `pruefen`; den Grund nennt die Zeile `Hinweis … ohne Ton` auf stderr des Hooks. Im Fernbetrieb braucht der Hook dieselben Variablen wie der Stop-Hook |
 | Kein Ton, `./sprechen.sh --status` meldet `"zustand": "aus"` | Hooks fehlen oder greifen nicht | Hook-Einträge prüfen; Protokoll `~/Library/Logs/hoerbuch-generator/sprechdienst.log` |
 | `Modell nicht ladbar: … No Metal device available` | Der Dienst wurde aus einer Sandbox gestartet | `./sprechen.sh --beenden` im Terminal; den nächsten Start übernimmt der Hook |
 | Kein Ton, obwohl der Dienst läuft | Die Antwort trägt keine Sprechmarke | `/sprechen` erneut aufrufen |

@@ -12,9 +12,15 @@ Usage (als Hook, Eingabe ist das Hook-JSON auf stdin; Einrichtung: README.md dan
     .venv/bin/python integrationen/claude-code/claude_sprechen.py stop     Marke sprechen
     .venv/bin/python integrationen/claude-code/claude_sprechen.py prompt   Stoppwort erkennen
     .venv/bin/python integrationen/claude-code/claude_sprechen.py start    Modus von Anfang an
+    .venv/bin/python integrationen/claude-code/claude_sprechen.py notification  Ansage beim Warten
+    .venv/bin/python integrationen/claude-code/claude_sprechen.py pruefen  Einrichtung prüfen
 
 start ist für einen SessionStart-Hook: Es gibt die Regeln aus sprechen.md als Kontext aus,
 jede Sitzung beginnt dann im Gesprächsmodus, bis /sprechen aus ihn abschaltet.
+notification ist für einen Notification-Hook: Wartet Claude auf eine Freigabe oder eine Eingabe,
+spricht es einen festen Satz, wenn der Gesprächsmodus der Sitzung an ist. pruefen ist kein Hook,
+sondern ein Befehl für das Terminal: Er liest die Hook-Einträge aus ~/.claude/settings.json und
+meldet je Gerät, was fehlt (Exit 1).
 
 Einstellungen über Umgebungsvariablen:
     SPRECHEN_STIMME  Stimme aus stimmen/ (Standard: marketing, ein ruhiger Gesprächston)
@@ -77,6 +83,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -86,9 +93,26 @@ REPO = Path(__file__).resolve().parents[2]
 COMMAND = Path(__file__).resolve().parent / "sprechen.md"
 EINSCHALTEN = "## Sonst: Modus einschalten"
 BESTAETIGEN = "Bestätige das Einschalten"
-VORSPANN = ("Der Gesprächsmodus ist in dieser Sitzung von Anfang an eingeschaltet (SessionStart-Hook "
-            "des Hörbuch-Generators), ohne Bestätigung. /sprechen aus schaltet ihn ab, "
-            "/sprechen datei auf Audiodateien um. Bis dahin gilt:\n\n")
+START_KENNUNG = "Der Gesprächsmodus ist in dieser Sitzung von Anfang an eingeschaltet"
+VORSPANN = (START_KENNUNG + " (SessionStart-Hook des Hörbuch-Generators), ohne Bestätigung. "
+            "/sprechen aus schaltet ihn ab, /sprechen datei auf Audiodateien um. "
+            "Bis dahin gilt:\n\n")
+# Notification: ein fester Satz je Typ. idle_prompt fehlt mit Absicht: Er kommt rund 60 s nach
+# jeder Antwort, die der Stop-Hook gerade gesprochen hat
+HINWEISE = {
+    "permission_prompt": "Claude wartet auf deine Freigabe.",
+    "elicitation_dialog": "Claude wartet auf deine Eingabe.",
+    "elicitation_url_dialog": "Claude wartet auf deine Eingabe.",
+}
+# Eine Rückfrage von Claude kommt in Oberflächen auf Basis des Agent SDK als permission_prompt mit
+# "Claude needs your permission to use AskUserQuestion" (gemessen am 27.11.2026 in T3 Code)
+RUECKFRAGE = "Claude hat eine Frage an dich."
+# So steht ein /sprechen-Aufruf im Transkript (gelesen am 27.11.2026, Claude Code 2.1.332)
+SPRECHEN_COMMAND = "<command-name>/sprechen</command-name>"
+COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+# Uhrzeit in jeder Zeile: wiedergabe.log sammelt Meldungen mehrerer Hintergrundprozesse
+LOG_FORMAT = "%(asctime)s claude_sprechen: %(message)s"
+LOG_ZEIT = "%Y-%m-%d %H:%M:%S"
 MARKE = re.compile(r"<!--\s*sprechen\s*:(.*?)-->", re.DOTALL | re.IGNORECASE)
 STIMME = "marketing"
 TEMPO = "1.1"
@@ -145,6 +169,20 @@ FERN_PLAYER = (
     "elif command -v ffplay >/dev/null 2>&1; then "
     "exec ffplay -nodisp -nostats -autoexit -loglevel error -f s16le -ar 24000 -ch_layout mono -; "
     "else echo 'kein Player (paplay, ffmpeg, ffplay)' >&2; exit 127; fi")
+# Für pruefen: dieselbe Suche, nur den Namen ausgeben statt abzuspielen
+FERN_PLAYER_NAME = re.sub(r"exec (\w+)[^;]*;", r"echo \1;", FERN_PLAYER)
+# Einträge in settings.json und der Unterbefehl, den jedes Ereignis aufruft
+HOOKS = {"Stop": "stop", "UserPromptSubmit": "prompt", "SessionStart": "start",
+         "Notification": "notification"}
+HOOKS_NOETIG = ("Stop", "UserPromptSubmit")
+# Variablen, die zwischen den Hooks gleich sein müssen, die sie nutzen; True: sonst ein Fehler.
+# Der Prompt-Hook braucht den Fernbetrieb für den Stopp auf dem Mac, die Gerätewahl nicht
+VERGLEICH = (
+    (("SPRECHEN_ENTFERNT", "SPRECHEN_ENTFERNT_REPO"), ("Stop", "UserPromptSubmit", "Notification"),
+     True),
+    (("SPRECHEN_GERAETE", "SPRECHEN_LEERLAUF"), ("Stop", "Notification"), True),
+    (("SPRECHEN_STIMME", "SPRECHEN_TEMPO", "SPRECHEN_LAUTER"), ("Stop", "Notification"), False),
+)
 
 log = logging.getLogger("claude_sprechen")
 
@@ -163,6 +201,39 @@ def regeln() -> str:
     if anfang < 0 or ende < 0:
         return ""
     return text[anfang + len(EINSCHALTEN):ende].strip()
+
+
+def modus(transcript: str) -> str | None:
+    """Gesprächsmodus der Sitzung aus ihrem Transkript: "an", "aus" oder None ohne Hinweis.
+    Es zählt der letzte Eintrag, der Kontext des SessionStart-Hooks (an) oder ein Aufruf von
+    /sprechen (aus und datei: kein Ton, sonst an). Das Transkript-Format ist nicht dokumentiert;
+    ändert es sich, gibt es keinen Hinweis mehr, und die Ansage bleibt stumm."""
+    zustand = None
+    with open(transcript, encoding="utf-8", errors="replace") as datei:
+        for zeile in datei:
+            if START_KENNUNG not in zeile and SPRECHEN_COMMAND not in zeile:
+                continue  # spart das Parsen der übrigen Zeilen, Transkripte werden groß
+            try:
+                eintrag = json.loads(zeile)
+            except ValueError:
+                continue
+            if not isinstance(eintrag, dict):
+                continue
+            nachricht = eintrag.get("message")
+            inhalt = nachricht.get("content") if isinstance(nachricht, dict) else None
+            anhang = eintrag.get("attachment")
+            # Nur die Eingabe selbst; Werkzeugergebnisse, die den Text zitieren, sind Listen
+            if (eintrag.get("type") == "user" and isinstance(inhalt, str)
+                    and SPRECHEN_COMMAND in inhalt):
+                treffer = COMMAND_ARGS.search(inhalt)
+                worte = treffer.group(1).split() if treffer else []
+                # Satzzeichen zählen nicht: „/sprechen aus.“ schaltet auch aus
+                erstes = re.sub(r"\W+", "", worte[0].casefold()) if worte else ""
+                zustand = "aus" if erstes in ("aus", "datei") else "an"
+            elif (isinstance(anhang, dict) and anhang.get("type") == "hook_additional_context"
+                  and START_KENNUNG in str(anhang.get("content"))):
+                zustand = "an"
+    return zustand
 
 
 def ansage(eingabe: dict) -> str:
@@ -201,12 +272,16 @@ def entfernter_befehl(ziel: str, args: list[str]) -> list[str]:
     """ssh-Aufruf von sprechen.sh auf dem Mac. ssh fügt die Argumente zu einer Zeile für die
     Shell dort zusammen, deshalb ist jedes einzeln gequotet; ~ wird zu "$HOME", damit es
     dort aufgelöst wird und nicht hier."""
+    return ["ssh", *SSH_OPTIONEN, ziel,
+            " ".join([_fern_pfad("sprechen.sh"), *map(shlex.quote, args)])]
+
+
+def _fern_pfad(name: str) -> str:
+    """Pfad einer Datei im Repo auf dem Mac, gequotet für die Shell dort."""
     repo = os.environ.get("SPRECHEN_ENTFERNT_REPO") or _repo_unter_home()
     if repo.startswith("~/"):
-        pfad = '"$HOME"/' + shlex.quote(repo[2:] + "/sprechen.sh")
-    else:
-        pfad = shlex.quote(repo.rstrip("/") + "/sprechen.sh")
-    return ["ssh", *SSH_OPTIONEN, ziel, " ".join([pfad, *map(shlex.quote, args)])]
+        return '"$HOME"/' + shlex.quote(repo[2:].rstrip("/") + "/" + name)
+    return shlex.quote(repo.rstrip("/") + "/" + name)
 
 
 def _repo_unter_home() -> str:
@@ -305,6 +380,8 @@ def abspielen(auftrag: dict) -> int:
     ordner.mkdir(parents=True, exist_ok=True)
     marke = ordner / f"laeuft-{_kennung(auftrag.get('quelle', ''))}-{os.getpid()}"
     marke.touch()
+    beginn = time.monotonic()
+    log.info("Auftrag: %d Zeichen", len(auftrag.get("text", "")))
     try:
         geraet = None
         if geraete():
@@ -314,7 +391,10 @@ def abspielen(auftrag: dict) -> int:
                 return 0
             if geraet == HIER and not ziel:
                 # Rechnet und spielt dieses Gerät, spielt der Dienst selbst wie ohne Gerätewahl
-                return aufrufen([*auftrag["args"], "-"], auftrag["text"])
+                rc = aufrufen([*auftrag["args"], "-"], auftrag["text"])
+                if rc == 0:
+                    log.info("an den Dienst hier übergeben")
+                return rc
         player = player_befehl() if geraet in (None, HIER) else ["ssh", *SSH_OPTIONEN, geraet,
                                                                  FERN_PLAYER]
         if not player:
@@ -324,33 +404,57 @@ def abspielen(auftrag: dict) -> int:
             # Zwei Sitzungen auf diesem Gerät: Der Mac liefert schneller, als der Player
             # spielt, und beide Antworten klängen sonst übereinander
             fcntl.flock(sperre, fcntl.LOCK_EX)
+            log.info("Wiedergabe auf %s, gerechnet auf %s", geraet or HIER, ziel or HIER)
             ssh = subprocess.Popen(rechen_befehl([*auftrag["args"], "--liefern", "-"]),
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-            spieler = subprocess.Popen(player, stdin=ssh.stdout)
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+            spieler = subprocess.Popen(player, stdin=ssh.stdout, stderr=subprocess.PIPE)
             ssh.stdout.close()  # nur der Player liest; endet er, bekommt ssh SIGPIPE
+            faeden = [_weiterleiten(ssh.stderr, f"Rechnen auf {ziel or HIER}"),
+                      _weiterleiten(spieler.stderr, f"Player auf {geraet or HIER}")]
             try:
-                ssh.stdin.write(auftrag["text"].encode())
-                ssh.stdin.close()
-            except BrokenPipeError:
-                pass
-            frist = OBERGRENZE_GRUND + OBERGRENZE_JE_ZEICHEN * len(auftrag["text"])
-            if not _warten(spieler, frist):
-                log.error("Wiedergabe auf %s nach %d s abgebrochen (Obergrenze)",
-                          geraet or HIER, frist)
-                _warten(ssh, 0)
-                return 0
-            if not _warten(ssh, NACHLAUF):
-                log.error("sprechen.sh auf %s endete %d s nach dem Player nicht, beendet",
-                          ziel or HIER, NACHLAUF)
-                return 0
-            # Endet der Player vorzeitig, stirbt ssh an SIGPIPE; das ist kein Fehler des Macs
-            if spieler.returncode == 0 and ssh.returncode != 0:
-                log.error("sprechen.sh auf %s endete mit %s", ziel or HIER, ssh.returncode)
-            elif spieler.returncode != 0:
-                log.error("Player %s endete mit %s", player[0], spieler.returncode)
+                try:
+                    ssh.stdin.write(auftrag["text"].encode())
+                    ssh.stdin.close()
+                except BrokenPipeError:
+                    pass
+                frist = OBERGRENZE_GRUND + OBERGRENZE_JE_ZEICHEN * len(auftrag["text"])
+                if not _warten(spieler, frist):
+                    log.error("Wiedergabe auf %s nach %d s abgebrochen (Obergrenze)",
+                              geraet or HIER, frist)
+                    _warten(ssh, 0)
+                    return 0
+                if not _warten(ssh, NACHLAUF):
+                    log.error("sprechen.sh auf %s endete %d s nach dem Player nicht, beendet",
+                              ziel or HIER, NACHLAUF)
+                    return 0
+                # Endet der Player vorzeitig, stirbt ssh an SIGPIPE; kein Fehler des Macs
+                if spieler.returncode == 0 and ssh.returncode != 0:
+                    log.error("sprechen.sh auf %s endete mit %s", ziel or HIER, ssh.returncode)
+                elif spieler.returncode != 0:
+                    log.error("Player %s endete mit %s", player[0], spieler.returncode)
+                else:
+                    log.info("Wiedergabe auf %s fertig nach %.1f s", geraet or HIER,
+                             time.monotonic() - beginn)
+            finally:
+                for faden in faeden:
+                    faden.join(timeout=2)
     finally:
         marke.unlink(missing_ok=True)
     return 0
+
+
+def _weiterleiten(strom, name: str) -> threading.Thread:
+    """Meldungen von ssh oder Player mit Uhrzeit ins Protokoll, statt roh auf stderr."""
+    def lesen() -> None:
+        with strom:
+            for zeile in strom:
+                text = zeile.decode(errors="replace").rstrip()
+                if text:
+                    log.warning("%s: %s", name, text)
+    faden = threading.Thread(target=lesen, daemon=True)
+    faden.start()
+    return faden
 
 
 def _warten(prozess: subprocess.Popen, frist: float) -> bool:
@@ -424,17 +528,265 @@ def ausgabe_stoppen(sitzung: str, quelle: list[str], entfernt: str) -> None:
         log.error("Stopp auf %s gescheitert: %s", entfernt, e)
 
 
+def sprechen_lassen(eingabe: dict, text: str) -> None:
+    """Text mit Stimme, Sitzung und Ansage an den Dienst, über Gerätewahl oder Fernbetrieb in
+    einem Hintergrundprozess, sonst direkt."""
+    sitzung = str(eingabe.get("session_id") or "")
+    quelle = ["--quelle", sitzung] if sitzung else []
+    name = ansage(eingabe) if quelle else ""
+    sprechen = ["-v", os.environ.get("SPRECHEN_STIMME", STIMME),
+                "-t", os.environ.get("SPRECHEN_TEMPO", TEMPO),
+                "--lauter", os.environ.get("SPRECHEN_LAUTER", LAUTER), *quelle,
+                *(["--ansage", name] if name else [])]
+    if os.environ.get("SPRECHEN_ENTFERNT") or geraete():
+        try:
+            wiedergabe_starten(sprechen, text, sitzung)
+        except OSError as e:
+            log.error("Wiedergabe nicht startbar: %s", e)
+    else:
+        aufrufen([*sprechen, "-"], text)
+
+
+def hinweis(eingabe: dict) -> str:
+    """Satz für einen Notification-Hook; leer, wenn der Typ keinen hat oder der
+    Gesprächsmodus der Sitzung nicht erkennbar an ist."""
+    satz = HINWEISE.get(str(eingabe.get("notification_type") or ""), "")
+    transcript = str(eingabe.get("transcript_path") or "")
+    if not satz or not transcript:
+        return ""
+    try:
+        zustand = modus(transcript)
+    except (OSError, ValueError) as e:  # ValueError: Nullbyte im Pfad
+        log.error("Transkript nicht lesbar: %s", e)
+        return ""
+    if zustand != "an":
+        log.info("Hinweis %s ohne Ton: Gesprächsmodus %s", eingabe.get("notification_type"),
+                 zustand or "nicht erkennbar")
+        return ""
+    if "AskUserQuestion" in str(eingabe.get("message") or ""):
+        return RUECKFRAGE
+    return satz
+
+
+# --- pruefen -----------------------------------------------------------------------------
+
+def settings_pfad() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+
+
+def hooks_lesen(daten: dict) -> tuple[dict[str, str], dict[str, list[str]],
+                                       dict[str, dict[str, str]]]:
+    """Aus settings.json: die SPRECHEN_*-Variablen unter env, je Ereignis die Unterbefehle
+    dieses Skripts, die dort eingetragen sind, und je Ereignis die SPRECHEN_*-Variablen vor dem
+    Befehl mit dem passenden Unterbefehl (beim ersten solchen Eintrag)."""
+    env = daten.get("env")
+    umgebung = {k: str(v) for k, v in (env.items() if isinstance(env, dict) else ())
+                if k.startswith("SPRECHEN_")}
+    eingetragen: dict[str, list[str]] = {}
+    praefixe: dict[str, dict[str, str]] = {}
+    hooks = daten.get("hooks") or {}
+    for ereignis, gruppen in hooks.items() if isinstance(hooks, dict) else ():
+        for gruppe in gruppen if isinstance(gruppen, list) else ():
+            for hook in (gruppe.get("hooks") or []) if isinstance(gruppe, dict) else ():
+                befehl = str(hook.get("command") or "") if isinstance(hook, dict) else ""
+                if "claude_sprechen.py" not in befehl:
+                    continue
+                try:
+                    teile = shlex.split(befehl)
+                except ValueError:
+                    teile = befehl.split()
+                skript = next((i for i, t in enumerate(teile)
+                               if t.endswith("claude_sprechen.py")), -1)
+                unterbefehl = teile[skript + 1] if 0 <= skript < len(teile) - 1 else ""
+                eingetragen.setdefault(ereignis, []).append(unterbefehl)
+                if unterbefehl != HOOKS.get(ereignis) or ereignis in praefixe:
+                    continue
+                praefix = praefixe[ereignis] = {}
+                for teil in teile:
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", teil):
+                        break
+                    name, wert = teil.split("=", 1)
+                    if name.startswith("SPRECHEN_"):
+                        praefix[name] = wert
+    return umgebung, eingetragen, praefixe
+
+
+def _abweichungen(umgebung: dict[str, str], praefixe: dict[str, dict[str, str]]
+                  ) -> list[tuple[str, bool]]:
+    """Variablen, die zwischen den Hooks abweichen, die sie nutzen, als Text und ob das ein
+    Problem ist. Verglichen wird env aus settings.json mit dem Präfix darüber, je Hook."""
+    meldungen = []
+    for namen, ereignisse, problem in VERGLEICH:
+        dabei = [e for e in ereignisse if e in praefixe]
+        for name in namen:
+            werte = {e: {**umgebung, **praefixe[e]}.get(name) for e in dabei}
+            if len(set(werte.values())) > 1:
+                meldungen.append((f"{name} weicht ab: " + ", ".join(
+                    f"{e} {w if w is not None else '(nicht gesetzt)'}"
+                    for e, w in werte.items()), problem))
+    return meldungen
+
+
+def _lauf(befehl: list[str], frist: float) -> tuple[int, str, str]:
+    """Befehl mit Frist; Rückgabe Exit-Code (124 bei Zeitablauf), stdout, letzte stderr-Zeile."""
+    try:
+        lauf = subprocess.run(befehl, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=frist)
+    except subprocess.TimeoutExpired:
+        return 124, "", f"keine Antwort nach {frist:g} s"
+    except OSError as e:
+        return 127, "", str(e)
+    fehler = lauf.stderr.strip().splitlines()
+    return lauf.returncode, lauf.stdout, fehler[-1] if fehler else ""
+
+
+def _version_hier() -> str:
+    rc, aus, _ = _lauf(["git", "-C", str(REPO), "describe", "--tags", "--always", "--dirty"],
+                       STOPP_TIMEOUT)
+    return aus.strip() if rc == 0 and aus.strip() else "unbekannt"
+
+
+def _dienst(rc: int, aus: str, fehler: str) -> tuple[str, bool]:
+    """Ausgabe von sprechen.sh --status als Text und ob sie ein Problem zeigt."""
+    try:
+        status = json.loads(aus)
+    except ValueError:
+        return f"sprechen.sh scheiterte ({rc}): {fehler or 'keine Ausgabe'}", True
+    if not isinstance(status, dict):
+        return f"sprechen.sh --status lieferte kein JSON-Objekt: {aus.strip()[:80]}", True
+    zustand = status.get("zustand")
+    if zustand == "aus":
+        return "Dienst aus, startet beim ersten Auftrag", False
+    if zustand == "fehler" or not status.get("ok"):
+        return f"Dienst mit Fehler: {status.get('fehler') or zustand}", True
+    return f"Dienst {zustand}", False
+
+
+def pruefen() -> int:
+    """Einrichtung dieses Geräts prüfen und Zeile für Zeile melden; Exit 1, wenn etwas fehlt.
+    Liest kein stdin und gehört in kein Hook-Ereignis."""
+    probleme = 0
+    hinweise = 0
+
+    def melden(bereich: str, text: str, problem: bool = False, hinweis: bool = False) -> None:
+        nonlocal probleme, hinweise
+        probleme += problem
+        hinweise += hinweis and not problem
+        stufe = "FEHLER: " if problem else "Hinweis: " if hinweis else ""
+        print(f"{bereich:<9} {stufe}{text}")
+
+    pfad = settings_pfad()
+    try:
+        daten = json.loads(pfad.read_text(encoding="utf-8"))
+        if not isinstance(daten, dict):
+            raise ValueError("kein JSON-Objekt")
+    except (OSError, ValueError) as e:
+        melden("Hooks", f"{pfad} nicht lesbar: {e}", True)
+        daten = {}
+    umgebung, eingetragen, praefixe = hooks_lesen(daten)
+    if daten:
+        for ereignis, unterbefehl in HOOKS.items():
+            gefunden = eingetragen.get(ereignis, [])
+            if unterbefehl in gefunden:
+                melden("Hooks", f"{ereignis}: {unterbefehl}")
+            elif gefunden:
+                melden("Hooks", f"{ereignis} ruft {', '.join(gefunden)} auf statt {unterbefehl}",
+                       True)
+            else:
+                melden("Hooks", f"{ereignis} fehlt" +
+                       ("" if ereignis in HOOKS_NOETIG else " (optional)"),
+                       ereignis in HOOKS_NOETIG)
+        for text, problem in _abweichungen(umgebung, praefixe):
+            melden("Hooks", text, problem, hinweis=True)
+    # Wie beim Stop-Hook: Claude Code gibt ihm seine Umgebung samt env aus settings.json, das
+    # Präfix vor dem Befehl gilt vor beidem. Die Umgebung hier steht für die von Claude Code
+    os.environ.update({**umgebung, **praefixe.get("Stop", {})})
+    for name in sorted(k for k in os.environ if k.startswith("SPRECHEN_")):
+        melden("Variable", f"{name}={os.environ[name]}")
+
+    hier = _version_hier()
+    melden("Version", f"{hier} (dieser Klon)")
+    ziel = os.environ.get("SPRECHEN_ENTFERNT", "")
+    if ziel:
+        rc, aus, fehler = _lauf(entfernter_befehl(ziel, ["--status"]), STOPP_TIMEOUT)
+        if rc == 255 or rc == 124:
+            melden("Rechnen", f"{ziel}: ssh antwortet nicht ({fehler})", True)
+        else:
+            text, problem = _dienst(rc, aus, fehler)
+            rc_v, version, _ = _lauf(["ssh", *SSH_OPTIONEN, ziel,
+                                      f"git -C {_fern_pfad('')} describe --tags --always --dirty"],
+                                     STOPP_TIMEOUT)
+            version = version.strip() if rc_v == 0 and version.strip() else "unbekannt"
+            abweichung = "" if version == hier else f", anders als hier ({hier})"
+            melden("Rechnen", f"{ziel}: ssh ok, {version}{abweichung}, {text}", problem)
+    else:
+        rc, aus, fehler = _lauf(["/bin/bash", str(sprechen_sh()), "--status"], STOPP_TIMEOUT)
+        text, problem = _dienst(rc, aus, fehler)
+        melden("Rechnen", f"{HIER}: {text}", problem)
+
+    # Einen Player hier braucht nur der Fernbetrieb; sonst spielt der Dienst selbst
+    if ziel and (not geraete() or HIER in geraete()):
+        player = player_befehl()
+        melden("Player", f"{HIER}: {player[0] if player else 'keiner gefunden'}", not player)
+
+    try:
+        grenze = float(os.environ.get("SPRECHEN_LEERLAUF", LEERLAUF_MAX))
+    except ValueError:
+        grenze = LEERLAUF_MAX
+    # Ein schlafendes Gerät ist der Normalfall der Gerätewahl, es spielt dann ein anderes.
+    # Ein Fehler ist es erst, wenn keines antwortet
+    befunde: list[tuple[str, bool, bool]] = []  # Text, Problem, ssh antwortet nicht
+    for geraet in geraete():
+        if geraet == HIER:
+            befehl = _leerlauf_befehl(HIER)
+        else:
+            befehl = ["ssh", *SSH_OPTIONEN, geraet,
+                      f'echo "leerlauf $({LEERLAUF})"; echo "player $({FERN_PLAYER_NAME})"']
+        rc, aus, fehler = _lauf(befehl, ERKENNUNG_TIMEOUT)
+        if geraet != HIER and rc in (124, 255):
+            befunde.append((f"{geraet}: ssh antwortet nicht ({fehler})", True, True))
+            continue
+        werte = dict(zeile.split(" ", 1) for zeile in aus.splitlines() if " " in zeile)
+        sekunden = (werte.get("leerlauf", "") if geraet != HIER else aus).strip()
+        teile = []
+        problem = False
+        if sekunden.isdigit():
+            teile.append(f"Leerlauf {sekunden} s" +
+                         (f", über {grenze:g} s: dort spräche es nicht" if int(sekunden) > grenze
+                          else ""))
+        else:
+            teile.append("keine Leerlaufzeit (weder ioreg noch GNOME)")
+            problem = True
+        if geraet != HIER:
+            name = werte.get("player", "").strip()
+            teile.append(f"Player {name}" if name else "kein Player (paplay, ffmpeg, ffplay)")
+            problem = problem or not name
+        befunde.append((f"{geraet}: {', '.join(teile)}", problem, False))
+    keines = all(stumm for _, _, stumm in befunde)
+    for text, problem, stumm in befunde:
+        melden("Gerät", text, problem and (keines or not stumm), hinweis=stumm)
+
+    zusatz = f" ({hinweise} Hinweis{'e' if hinweise > 1 else ''})" if hinweise else ""
+    print(f"Ergebnis: {'alles da' if not probleme else f'{probleme} Problem(e)'}{zusatz}")
+    return 1 if probleme else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Claude-Code-Hooks für den Sprechdienst")
     # abspielen ist intern: der Hintergrundprozess des Fernbetriebs
-    parser.add_argument("ereignis", choices=["stop", "prompt", "start", "abspielen"])
+    parser.add_argument("ereignis", choices=["stop", "prompt", "start", "notification",
+                                             "pruefen", "abspielen"])
     try:
         args = parser.parse_args()
     except SystemExit:
         # argparse endet bei falschem Argument mit Exit 2, und Exit 2 bei UserPromptSubmit
         # verwirft jede Eingabe. Ein Tippfehler im Hook-Eintrag (etwa "Stop") darf das nicht
         return 0
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="claude_sprechen: %(message)s")
+    logging.basicConfig(stream=sys.stderr, level=logging.INFO, format=LOG_FORMAT,
+                        datefmt=LOG_ZEIT)
+
+    if args.ereignis == "pruefen":
+        return pruefen()
 
     try:
         eingabe = json.load(sys.stdin)
@@ -482,20 +834,12 @@ def main() -> int:
                              ensure_ascii=False))
         return 0
 
-    text = gesprochener_text(str(eingabe.get("last_assistant_message", "")))
+    if args.ereignis == "notification":
+        text = hinweis(eingabe)
+    else:
+        text = gesprochener_text(str(eingabe.get("last_assistant_message", "")))
     if text:
-        name = ansage(eingabe) if quelle else ""
-        sprechen = ["-v", os.environ.get("SPRECHEN_STIMME", STIMME),
-                    "-t", os.environ.get("SPRECHEN_TEMPO", TEMPO),
-                    "--lauter", os.environ.get("SPRECHEN_LAUTER", LAUTER), *quelle,
-                    *(["--ansage", name] if name else [])]
-        if entfernt or geraete():
-            try:
-                wiedergabe_starten(sprechen, text, sitzung)
-            except OSError as e:
-                log.error("Wiedergabe nicht startbar: %s", e)
-        else:
-            aufrufen([*sprechen, "-"], text)
+        sprechen_lassen(eingabe, text)
     return 0
 
 

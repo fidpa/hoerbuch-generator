@@ -24,6 +24,11 @@ sys.path.insert(0, str(SKRIPT.parent))
 
 from claude_sprechen import ansage, gesprochener_text  # noqa: E402
 
+# So steht der Kontext des SessionStart-Hooks im Transkript einer Sitzung
+START = {"type": "attachment", "attachment": {"type": "hook_additional_context", "content": [
+    "Der Gesprächsmodus ist in dieser Sitzung von Anfang an eingeschaltet (SessionStart-Hook "
+    "des Hörbuch-Generators) …"]}}
+
 
 class Marke(unittest.TestCase):
     def test_ohne_marke_nichts(self):
@@ -138,6 +143,78 @@ class Hook(unittest.TestCase):
                               capture_output=True,
                               env={"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin"})
         self.assertEqual(lauf.returncode, 0)
+
+    # --- notification: fester Satz, wenn Claude wartet und der Modus an ist ---------------
+
+    def _transkript(self, *eintraege: dict) -> str:
+        datei = self.tmp / "sitzung.jsonl"
+        datei.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in eintraege),
+                         encoding="utf-8")
+        return str(datei)
+
+    @staticmethod
+    def _command(argumente: str = "") -> dict:
+        text = "<command-message>sprechen</command-message>\n<command-name>/sprechen</command-name>"
+        if argumente:
+            text += f"\n<command-args>{argumente}</command-args>"
+        return {"type": "user", "message": {"role": "user", "content": text}}
+
+    def _hinweis(self, *eintraege: dict, typ: str = "permission_prompt") -> str:
+        rc, aufruf = self._lauf("notification", {
+            "session_id": "abc", "hook_event_name": "Notification", "notification_type": typ,
+            "message": "Claude needs your permission",
+            "transcript_path": self._transkript(*eintraege)})
+        self.assertEqual(rc, 0)
+        return aufruf
+
+    def test_freigabe_spricht_festen_satz(self):
+        self.assertEqual(self._hinweis(START),
+                         "-v marketing -t 1.1 --lauter 8 --quelle abc -\n"
+                         "Claude wartet auf deine Freigabe.")
+
+    def test_rueckfrage_von_claude(self):
+        # So kam AskUserQuestion am 27.11.2026 in T3 Code an
+        rc, aufruf = self._lauf("notification", {
+            "session_id": "abc", "notification_type": "permission_prompt",
+            "message": "Claude needs your permission to use AskUserQuestion",
+            "transcript_path": self._transkript(START)})
+        self.assertEqual(rc, 0)
+        self.assertTrue(aufruf.endswith("Claude hat eine Frage an dich."), aufruf)
+
+    def test_mcp_formular_spricht_eingabe(self):
+        self.assertTrue(self._hinweis(self._command(), typ="elicitation_dialog")
+                        .endswith("Claude wartet auf deine Eingabe."))
+
+    def test_aus_und_datei_bleiben_stumm(self):
+        for argument in ("aus", "datei", " AUS ", "aus.", "Datei!"):
+            self.protokoll.unlink(missing_ok=True)
+            self.assertEqual(self._hinweis(START, self._command(argument)), "", argument)
+
+    def test_der_letzte_aufruf_zaehlt(self):
+        self.assertNotEqual(self._hinweis(START, self._command("aus"), self._command()), "")
+        self.protokoll.unlink(missing_ok=True)
+        # Nach dem Kompaktieren setzt der SessionStart-Hook den Modus wieder an
+        self.assertNotEqual(self._hinweis(self._command("aus"), START), "")
+
+    def test_ohne_gespraechsmodus_stumm(self):
+        self.assertEqual(self._hinweis({"type": "user", "message": {"content": "Hallo"}}), "")
+
+    def test_zitat_in_einem_werkzeugergebnis_zaehlt_nicht(self):
+        zitat = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": self._command("aus")["message"]["content"]}]}}
+        self.assertNotEqual(self._hinweis(START, zitat), "")
+
+    def test_leerlauf_hinweis_bleibt_stumm(self):
+        # idle_prompt kommt nach jeder gesprochenen Antwort; ein Satz dazu wäre doppelt
+        self.assertEqual(self._hinweis(START, typ="idle_prompt"), "")
+
+    def test_fehlendes_transkript_bricht_nicht_ab(self):
+        for eingabe in ({"notification_type": "permission_prompt",
+                         "transcript_path": str(self.tmp / "fehlt.jsonl")},
+                        {"notification_type": "permission_prompt", "transcript_path": "a\x00b"},
+                        {"notification_type": "permission_prompt"}, {}):
+            rc, aufruf = self._lauf("notification", eingabe)
+            self.assertEqual((rc, aufruf), (0, ""), eingabe)
 
     def test_fehlender_generator_bricht_nicht_ab(self):
         lauf = subprocess.run([sys.executable, str(SKRIPT), "stop"],
@@ -294,6 +371,24 @@ class Fernbetrieb(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(list((self.tmp / "run" / "hoerbuch-generator").glob("laeuft-*")), [])
         return dauer, protokoll.output
+
+    def test_protokoll_mit_uhrzeit_auch_fuer_fremde_meldungen(self):
+        # Meldungen von ssh und Player stehen mit Uhrzeit im Protokoll, nicht roh dazwischen
+        self.env["SPRECHEN_PLAYER"] = "/bin/sh -c 'cat > /dev/null; echo kaputt >&2; exit 3'"
+        self.assertEqual(self._lauf("stop", {"session_id": "abc", "last_assistant_message":
+                                             "<!-- sprechen: Hallo. -->"}), 0)
+        log = self.tmp / "run" / "hoerbuch-generator" / "wiedergabe.log"
+        import time
+        frist = time.monotonic() + 10
+        while time.monotonic() < frist and not all(t in (
+                log.read_text(encoding="utf-8") if log.exists() else "")
+                for t in ("endete mit", "kaputt")):
+            time.sleep(0.05)
+        zeilen = log.read_text(encoding="utf-8").splitlines()
+        self.assertTrue(any("Player auf hier: kaputt" in z for z in zeilen), zeilen)
+        self.assertTrue(any("Auftrag: 6 Zeichen" in z for z in zeilen), zeilen)
+        for zeile in zeilen:
+            self.assertRegex(zeile, r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d claude_sprechen: ")
 
     def test_haengender_player_endet_an_der_obergrenze(self):
         # Wie ein MacBook, das während der Wiedergabe einschläft: Der Player liest nicht weiter
@@ -476,6 +571,151 @@ class Geraetewahl(unittest.TestCase):
         import claude_sprechen
         with mock.patch.dict(os.environ, self.env):
             self.assertIsNone(claude_sprechen.geraet_waehlen(["schlaeft"]))
+
+
+class Pruefen(unittest.TestCase):
+    """pruefen: liest die Hooks aus settings.json unter HOME und fragt über ein falsches ssh
+    nach. Das ssh beantwortet --status, git describe und die Abfrage je Gerät; ein Gerät
+    namens "schlaeft" ist nicht erreichbar."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pruefen"))
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        ssh = self.bin / "ssh"
+        ssh.write_text(
+            '#!/bin/sh\nziel=""; letztes=""\n'
+            'for a; do ziel="$letztes"; letztes="$a"; done\n'
+            '[ "$ziel" = schlaeft ] && { echo "ssh: connect: Operation timed out" >&2; exit 255; }\n'
+            'case "$letztes" in\n'
+            '  *--status*) echo \'{"ok": true, "zustand": "bereit"}\';;\n'
+            '  *describe*) echo v9.9.9;;\n'
+            '  *leerlauf*) echo "leerlauf 12"; echo "player ffmpeg";;\n'
+            'esac\n', encoding="utf-8")
+        ssh.chmod(0o755)
+        self.env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.tmp)}
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _settings(self, hooks: dict) -> None:
+        (self.tmp / ".claude").mkdir(exist_ok=True)
+        (self.tmp / ".claude" / "settings.json").write_text(json.dumps({"hooks": hooks}),
+                                                            encoding="utf-8")
+
+    @staticmethod
+    def _hook(befehl: str) -> list:
+        return [{"hooks": [{"type": "command", "command": befehl}]}]
+
+    def _standard(self, geraete: str = "buero") -> None:
+        skript = "python3 $HOME/hg/integrationen/claude-code/claude_sprechen.py"
+        self._settings({
+            "Stop": self._hook(f"SPRECHEN_ENTFERNT=mac SPRECHEN_GERAETE='{geraete}' {skript} stop"),
+            "UserPromptSubmit": self._hook(f"SPRECHEN_ENTFERNT=mac {skript} prompt")})
+
+    def _pruefen(self, **env: str) -> tuple[int, str]:
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "pruefen"], stdin=subprocess.DEVNULL,
+                              text=True, capture_output=True, env={**self.env, **env}, timeout=30)
+        return lauf.returncode, lauf.stdout
+
+    def test_alles_da(self):
+        self._standard()
+        rc, aus = self._pruefen()
+        self.assertEqual(rc, 0, aus)
+        self.assertIn("Variable  SPRECHEN_GERAETE=buero", aus)
+        self.assertIn("Rechnen   mac: ssh ok, v9.9.9", aus)
+        self.assertIn("Dienst bereit", aus)
+        self.assertIn("Gerät     buero: Leerlauf 12 s, Player ffmpeg", aus)
+        self.assertIn("Notification fehlt (optional)", aus)
+        self.assertTrue(aus.rstrip().endswith("Ergebnis: alles da"), aus)
+
+    def test_schlafendes_geraet_ist_ein_hinweis(self):
+        self._standard("buero schlaeft")
+        rc, aus = self._pruefen()
+        self.assertEqual(rc, 0, aus)
+        self.assertIn("Hinweis: schlaeft: ssh antwortet nicht (ssh: connect: Operation timed out)",
+                      aus)
+        self.assertIn("Ergebnis: alles da (1 Hinweis)", aus)
+
+    def test_antwortet_kein_geraet_ist_es_ein_problem(self):
+        self._standard("schlaeft")
+        rc, aus = self._pruefen()
+        self.assertEqual(rc, 1, aus)
+        self.assertIn("FEHLER: schlaeft: ssh antwortet nicht", aus)
+        self.assertIn("Ergebnis: 1 Problem(e)", aus)
+
+    def test_abweichende_variablen_zwischen_hooks(self):
+        skript = "python3 $HOME/hg/integrationen/claude-code/claude_sprechen.py"
+        self._settings({
+            "Stop": self._hook(f"SPRECHEN_ENTFERNT=mac SPRECHEN_GERAETE=buero "
+                               f"SPRECHEN_STIMME=a {skript} stop"),
+            # Der Prompt-Hook braucht SPRECHEN_GERAETE nicht, nur den Fernbetrieb
+            "UserPromptSubmit": self._hook(f"SPRECHEN_ENTFERNT=mac {skript} prompt"),
+            "Notification": self._hook(f"SPRECHEN_GERAETE=buero {skript} notification")})
+        rc, aus = self._pruefen()
+        self.assertEqual(rc, 1, aus)
+        self.assertIn("FEHLER: SPRECHEN_ENTFERNT weicht ab: Stop mac, UserPromptSubmit mac, "
+                      "Notification (nicht gesetzt)", aus)
+        self.assertIn("Hinweis: SPRECHEN_STIMME weicht ab", aus)
+        self.assertNotIn("SPRECHEN_GERAETE weicht ab", aus)
+        self.assertIn("Ergebnis: 1 Problem(e) (1 Hinweis)", aus)
+
+    def test_fehlender_stop_hook_und_fehlende_settings(self):
+        self._settings({"UserPromptSubmit": self._hook("python3 x/claude_sprechen.py prompt")})
+        rc, aus = self._pruefen()
+        self.assertEqual(rc, 1, aus)
+        self.assertIn("FEHLER: Stop fehlt", aus)
+        (self.tmp / ".claude" / "settings.json").unlink()
+        rc, aus = self._pruefen()
+        self.assertEqual(rc, 1, aus)
+        self.assertIn("nicht lesbar", aus)
+
+    def test_praefix_gilt_vor_settings_und_umgebung(self):
+        # Wie beim Hook: Umgebung, darüber env aus settings.json, darüber das Präfix
+        skript = "python3 $HOME/hg/integrationen/claude-code/claude_sprechen.py"
+        (self.tmp / ".claude").mkdir(exist_ok=True)
+        (self.tmp / ".claude" / "settings.json").write_text(json.dumps({
+            "env": {"SPRECHEN_GERAETE": "schlaeft", "SPRECHEN_LAUTER": "5"},
+            "hooks": {"Stop": self._hook(f"SPRECHEN_ENTFERNT=mac SPRECHEN_GERAETE=buero "
+                                         f"{skript} stop"),
+                      "UserPromptSubmit": self._hook(f"SPRECHEN_ENTFERNT=mac {skript} prompt")}}),
+            encoding="utf-8")
+        rc, aus = self._pruefen(SPRECHEN_GERAETE="terminal", SPRECHEN_LAUTER="9",
+                                SPRECHEN_TEMPO="1.2")
+        self.assertEqual(rc, 0, aus)
+        self.assertIn("Variable  SPRECHEN_GERAETE=buero", aus)
+        self.assertIn("Variable  SPRECHEN_LAUTER=5", aus)
+        self.assertIn("Variable  SPRECHEN_TEMPO=1.2", aus)
+        self.assertNotIn("schlaeft", aus)
+        self.assertNotIn("terminal", aus)
+
+    def test_hooks_lesen(self):
+        import claude_sprechen
+        umgebung, eingetragen, praefixe = claude_sprechen.hooks_lesen({
+            "env": {"SPRECHEN_LAUTER": 12, "ANDERES": "x"},
+            "hooks": {"Stop": self._hook("SPRECHEN_ENTFERNT_REPO='~/R/hg' "
+                                         "python3 a/claude_sprechen.py stop"),
+                      "Notification": [{"matcher": "permission_prompt", "hooks": [
+                          {"type": "command", "command": "py claude_sprechen.py notification"}]}],
+                      "PreToolUse": self._hook("andere.sh")}})
+        self.assertEqual(umgebung, {"SPRECHEN_LAUTER": "12"})
+        self.assertEqual(eingetragen, {"Stop": ["stop"], "Notification": ["notification"]})
+        self.assertEqual(praefixe, {"Stop": {"SPRECHEN_ENTFERNT_REPO": "~/R/hg"},
+                                    "Notification": {}})
+        # Kaputte Einträge, die Claude Code selbst ablehnte, dürfen pruefen nicht abbrechen
+        self.assertEqual(claude_sprechen.hooks_lesen({
+            "env": ["SPRECHEN_LAUTER=12"],
+            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": None}]}]}}),
+            ({}, {}, {}))
+        self.assertTrue(claude_sprechen._dienst(0, "[1]", "")[1])
+
+    def test_player_suche_spielt_nicht(self):
+        import claude_sprechen
+        name = claude_sprechen.FERN_PLAYER_NAME
+        self.assertNotIn("exec", name)
+        for player in ("echo paplay;", "echo ffmpeg;", "echo ffplay;"):
+            self.assertIn(player, name)
 
 
 if __name__ == "__main__":

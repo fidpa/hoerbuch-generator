@@ -109,5 +109,6 @@ Der Gesprächsmodus ist an.
 <!-- sprechen: Der Gesprächsmodus ist an. -->
 ```
 
-Voraussetzung sind die beiden Hooks in den Einstellungen (Stop und UserPromptSubmit).
+Voraussetzung sind die Hooks Stop und UserPromptSubmit in den Einstellungen; SessionStart und
+Notification sind optional.
 Einrichtung und Grenzen: `integrationen/claude-code/README.md` im Hörbuch-Generator.

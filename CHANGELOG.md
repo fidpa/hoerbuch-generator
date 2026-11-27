@@ -6,6 +6,30 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.8.0] - 2026-11-27: Ansage, wenn Claude wartet, und eine Prüfung der Einrichtung
+
+### Hinzugefügt
+
+- **Ansage bei Freigabe und Rückfrage:** Wartet Claude auf eine Freigabe, blieb es bisher still,
+  weil kein Stop-Hook auslöst. Ein Notification-Hook mit dem neuen Unterbefehl `notification`
+  spricht dann „Claude wartet auf deine Freigabe.“, bei einem Formular eines MCP-Servers „Claude
+  wartet auf deine Eingabe.“, bei einer Rückfrage von Claude „Claude hat eine Frage an dich.“,
+  über dieselbe Gerätewahl wie die Antworten. Claude Code meldet das, wenn eine Freigabe rund
+  sechs Sekunden wartet. Den Hinweis nach 60 Sekunden ohne Eingabe
+  (`idle_prompt`) spricht der Hook nicht, er folgte sonst auf jede gesprochene Antwort. Still
+  bleibt er auch, wenn die Sitzung `/sprechen aus` oder `/sprechen datei` gesetzt hat; das liest
+  er aus dem Transkript der Sitzung.
+- **`claude_sprechen.py pruefen`:** meldet für ein Gerät, welche Hooks in
+  `~/.claude/settings.json` eingetragen sind, mit welchen Variablen, ob der Mac zum Rechnen per
+  ssh antwortet, welche Version sein Klon hat und ob der Dienst läuft, und je Gerät aus
+  `SPRECHEN_GERAETE` die Leerlaufzeit und den Player. Er meldet auch, wenn Fernbetrieb oder
+  Gerätewahl zwischen den Hooks abweichen, die sie nutzen. Fehlt etwas, endet er mit Exit 1; ein
+  schlafendes Gerät ist nur ein Hinweis, solange ein anderes antwortet. Er ist ein Befehl für das
+  Terminal, kein Hook.
+- **Uhrzeit im Protokoll:** Jede Zeile von `wiedergabe.log` beginnt mit Datum und Uhrzeit, auch
+  die Meldungen von ssh und Player, die bisher roh dazwischen standen. Dazu kommen Zeilen für den
+  Auftrag, den Beginn der Wiedergabe und ihr Ende mit der Dauer.
+
 ## [0.7.1] - 2026-11-27: Ein schlafendes Gerät legt die Sprachausgabe nicht mehr still
 
 ### Behoben
@@ -204,6 +228,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.8.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.8.0
 [0.7.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.7.1
 [0.7.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.7.0
 [0.6.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.6.1
