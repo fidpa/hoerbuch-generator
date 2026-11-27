@@ -6,6 +6,19 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.7.1] - 2026-11-27: Ein schlafendes Gerät legt die Sprachausgabe nicht mehr still
+
+### Behoben
+
+- **Gerät verstummte nach einem Abbruch:** Schlief ein Gerät mitten in der Wiedergabe ein, etwa
+  ein zugeklapptes MacBook, wartete die ssh-Verbindung zum Player ohne Ende. Der Prozess hielt
+  dabei die Sperre der Wiedergabe, und jede spätere Antwort, die auf demselben Gerät rechnete,
+  blieb stumm, bis der Prozess von Hand beendet wurde. ssh prüft die Verbindung jetzt alle fünf
+  Sekunden und gibt nach drei ausbleibenden Antworten auf. Hängt trotzdem etwas, endet die
+  Wiedergabe an einer Obergrenze von zwei Minuten plus einer Viertelsekunde je Zeichen, und der
+  Rechenteil bekommt nach dem Ende des Players noch zehn Sekunden. Beides steht in
+  `wiedergabe.log`.
+
 ## [0.7.0] - 2026-11-27: Antworten sprechen zu Ende, „Psst“ bricht ab
 
 ### Geändert
@@ -191,6 +204,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.7.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.7.1
 [0.7.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.7.0
 [0.6.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.6.1
 [0.6.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.6.0

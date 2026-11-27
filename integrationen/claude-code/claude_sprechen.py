@@ -95,8 +95,16 @@ TEMPO = "1.1"
 LAUTER = "8"
 TIMEOUT = 30  # Sekunden; sprechen.sh kehrt nach dem Annehmen des Auftrags zurück
 # Fernbetrieb: Der Prompt-Hook hat 10 s; ssh darf ihn nicht aufbrauchen, wenn der Mac schläft
-SSH_OPTIONEN = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4"]
+# ServerAlive: Schläft ein Gerät mitten in der Wiedergabe ein, gibt ssh nach etwa 15 s auf. Sonst
+# wartete es ohne Ende und hielte die Sperre, und jede spätere Antwort dieses Geräts bliebe stumm
+SSH_OPTIONEN = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+                "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
 STOPP_TIMEOUT = 8
+# Obergrenze einer Wiedergabe, falls trotzdem etwas hängt: Grundzeit für Warteschlange und
+# Modellstart, dazu reichlich Zeit je Zeichen (die Stimme spricht rund 15 Zeichen je Sekunde)
+OBERGRENZE_GRUND = 120
+OBERGRENZE_JE_ZEICHEN = 0.25
+NACHLAUF = 10  # Sekunden, die der Rechenteil nach dem Ende des Players noch bekommt
 # Eine Eingabe, die nur aus einem dieser Wörter besteht, beendet die Ausgabe der Sitzung.
 # „Stopp“ fehlt mit Absicht: Damit hält man oft Claude selbst an, etwa in T3 Code während
 # einer laufenden Antwort, und das Wort soll dann bei Claude ankommen
@@ -325,8 +333,16 @@ def abspielen(auftrag: dict) -> int:
                 ssh.stdin.close()
             except BrokenPipeError:
                 pass
-            spieler.wait()
-            ssh.wait()
+            frist = OBERGRENZE_GRUND + OBERGRENZE_JE_ZEICHEN * len(auftrag["text"])
+            if not _warten(spieler, frist):
+                log.error("Wiedergabe auf %s nach %d s abgebrochen (Obergrenze)",
+                          geraet or HIER, frist)
+                _warten(ssh, 0)
+                return 0
+            if not _warten(ssh, NACHLAUF):
+                log.error("sprechen.sh auf %s endete %d s nach dem Player nicht, beendet",
+                          ziel or HIER, NACHLAUF)
+                return 0
             # Endet der Player vorzeitig, stirbt ssh an SIGPIPE; das ist kein Fehler des Macs
             if spieler.returncode == 0 and ssh.returncode != 0:
                 log.error("sprechen.sh auf %s endete mit %s", ziel or HIER, ssh.returncode)
@@ -335,6 +351,17 @@ def abspielen(auftrag: dict) -> int:
     finally:
         marke.unlink(missing_ok=True)
     return 0
+
+
+def _warten(prozess: subprocess.Popen, frist: float) -> bool:
+    """Auf das Ende warten; nach Ablauf der Frist den Prozess beenden und False liefern."""
+    try:
+        prozess.wait(timeout=frist)
+        return True
+    except subprocess.TimeoutExpired:
+        prozess.kill()
+        prozess.wait()
+        return False
 
 
 def wiedergabe_stoppen(quelle: str) -> int:

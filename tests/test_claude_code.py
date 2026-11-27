@@ -269,6 +269,46 @@ class Fernbetrieb(unittest.TestCase):
                 with mock.patch.object(claude_sprechen.sys, "platform", plattform):
                     self.assertEqual(claude_sprechen.player_befehl()[0], erwartet, plattform)
 
+    def test_ssh_gibt_eine_tote_verbindung_auf(self):
+        import claude_sprechen
+        befehl = claude_sprechen.entfernter_befehl("mac", ["-"])
+        self.assertIn("ServerAliveInterval=5", befehl)
+        self.assertIn("ServerAliveCountMax=3", befehl)
+
+    def _abspielen_mit_grenzen(self, ssh_skript: str, player: str) -> tuple[float, list[str]]:
+        """abspielen im selben Prozess, mit Fristen von einer halben Sekunde."""
+        import time
+
+        import claude_sprechen
+        (self.bin / "ssh").write_text(ssh_skript, encoding="utf-8")
+        umgebung = {**self.env, "SPRECHEN_PLAYER": player}
+        with mock.patch.dict(os.environ, umgebung), \
+                mock.patch.multiple(claude_sprechen, OBERGRENZE_GRUND=0.5,
+                                    OBERGRENZE_JE_ZEICHEN=0, NACHLAUF=0.5), \
+                self.assertLogs("claude_sprechen", "ERROR") as protokoll:
+            os.environ.pop("SPRECHEN_GERAETE", None)
+            beginn = time.monotonic()
+            rc = claude_sprechen.abspielen({"args": ["--quelle", "abc"], "text": "Hallo.",
+                                            "quelle": "abc"})
+            dauer = time.monotonic() - beginn
+        self.assertEqual(rc, 0)
+        self.assertEqual(list((self.tmp / "run" / "hoerbuch-generator").glob("laeuft-*")), [])
+        return dauer, protokoll.output
+
+    def test_haengender_player_endet_an_der_obergrenze(self):
+        # Wie ein MacBook, das während der Wiedergabe einschläft: Der Player liest nicht weiter
+        dauer, meldungen = self._abspielen_mit_grenzen(
+            '#!/bin/sh\ncat > /dev/null; printf PCM\n', "sleep 30")
+        self.assertLess(dauer, 5)
+        self.assertIn("Obergrenze", meldungen[0])
+
+    def test_haengender_rechenteil_endet_nach_dem_player(self):
+        dauer, meldungen = self._abspielen_mit_grenzen(
+            '#!/bin/sh\ncat > /dev/null; printf PCM; exec >&-; exec sleep 30\n',
+            "/bin/sh -c 'cat > /dev/null'")
+        self.assertLess(dauer, 5)
+        self.assertIn("nach dem Player nicht", meldungen[0])
+
 
 class Sitzungsbeginn(unittest.TestCase):
     """start: Der SessionStart-Hook gibt die Regeln aus sprechen.md als Kontext aus."""

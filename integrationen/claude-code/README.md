@@ -228,6 +228,7 @@ Ablageordner sorgt dafür, dass der Aufruf mit Ausnahme nirgendwo sonst schreibt
 | Die Sprechmarke steht sichtbar im Fenster | Die Oberfläche blendet HTML-Kommentare nicht aus | nur Darstellung |
 | Fernbetrieb: kein Ton | Mac nicht erreichbar, ssh fragt nach einem Passwort, oder kein Player gefunden | `wiedergabe.log` lesen; `echo "Das ist ein Satz vom Mac." \| ssh <MAC> '<REPO>/sprechen.sh --liefern -' \| <Player>` von Hand |
 | Gerätewahl: Ton auf dem falschen Gerät oder keiner | Leerlaufzeiten anders als gedacht, Gerät antwortet nicht, oder alle über `SPRECHEN_LEERLAUF` | Zeile `Gerätewahl:` in `wiedergabe.log` lesen |
+| `wiedergabe.log`: `Wiedergabe auf … abgebrochen (Obergrenze)`, `Player ssh endete mit 255` oder `sprechen.sh auf … nach dem Player nicht, beendet` | Das Gerät schlief während der Wiedergabe ein, oder die Verbindung brach ab. ssh gibt nach etwa 15 s auf, sonst endet die Wiedergabe spätestens an der Obergrenze (zwei Minuten plus eine Viertelsekunde je Zeichen) | nichts zu tun, die nächste Antwort spielt wieder; tritt es oft auf, Schlafeinstellungen des Geräts prüfen |
 | Gerätewahl: Gerät gewählt, aber nichts zu hören | Der Player nimmt die Standardausgabe des Geräts, etwa einen Monitor statt der eingebauten Lautsprecher | Ausgabe am Gerät umstellen (macOS: Systemeinstellungen > Ton > Ausgabe) |
 | `/sprechen datei`: kein Player in der Antwort | Die Einbettung steht nicht allein auf ihrer Zeile, oder die Oberfläche spielt keine Einbettungen ab | Zeile prüfen; ältere T3-Code-Versionen auf dem iPhone zeigen „Image unavailable“ |
 
