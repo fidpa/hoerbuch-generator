@@ -11,6 +11,10 @@ siehe sprechen.md daneben) als HTML-Kommentar ans Ende der Antwort:
 Usage (als Hook, Eingabe ist das Hook-JSON auf stdin; Einrichtung: README.md daneben):
     .venv/bin/python integrationen/claude-code/claude_sprechen.py stop     Marke sprechen
     .venv/bin/python integrationen/claude-code/claude_sprechen.py prompt   Ausgabe abbrechen
+    .venv/bin/python integrationen/claude-code/claude_sprechen.py start    Modus von Anfang an
+
+start ist für einen SessionStart-Hook: Es gibt die Regeln aus sprechen.md als Kontext aus,
+jede Sitzung beginnt dann im Gesprächsmodus, bis /sprechen aus ihn abschaltet.
 
 Einstellungen über Umgebungsvariablen:
     SPRECHEN_STIMME  Stimme aus stimmen/ (Standard: marketing, ein ruhiger Gesprächston)
@@ -19,7 +23,7 @@ Einstellungen über Umgebungsvariablen:
                      -21 LUFS; 8 dB mit Limiter bringen sie auf rund -14 LUFS, so laut wie
                      Musik bei Streamingdiensten, damit sie daneben hörbar bleiben.
 
-Mehrere Sitzungen: Beide Hooks geben die session_id als --quelle mit, eine Eingabe bricht
+Mehrere Sitzungen: Stop- und Prompt-Hook geben die session_id als --quelle mit, eine Eingabe bricht
 also nur die Ausgabe der eigenen Sitzung ab. Dazu kommt „Aus <Projekt>.“ als --ansage; der
 Dienst spricht sie nur, wenn zuletzt eine andere Sitzung sprach. UserPromptSubmit feuert auch
 bei Berichten von Hintergrund-Agenten; die brechen die Ausgabe ihrer Sitzung ebenfalls ab.
@@ -70,6 +74,14 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+# SessionStart: der Abschnitt von sprechen.md, den /sprechen ohne Argument lädt, ohne die
+# Bestätigung; so bleibt sprechen.md die einzige Quelle der Regeln
+COMMAND = Path(__file__).resolve().parent / "sprechen.md"
+EINSCHALTEN = "## Sonst: Modus einschalten"
+BESTAETIGEN = "Bestätige das Einschalten"
+VORSPANN = ("Der Gesprächsmodus ist in dieser Sitzung von Anfang an eingeschaltet (SessionStart-Hook "
+            "des Hörbuch-Generators), ohne Bestätigung. /sprechen aus schaltet ihn ab, "
+            "/sprechen datei auf Audiodateien um. Bis dahin gilt:\n\n")
 MARKE = re.compile(r"<!--\s*sprechen\s*:(.*?)-->", re.DOTALL | re.IGNORECASE)
 STIMME = "marketing"
 TEMPO = "1.1"
@@ -115,6 +127,16 @@ def gesprochener_text(antwort: str) -> str:
     """Inhalt der letzten Sprechmarke, Leerraum zusammengezogen; leer ohne Marke."""
     treffer = MARKE.findall(antwort or "")
     return " ".join(treffer[-1].split()) if treffer else ""
+
+
+def regeln() -> str:
+    """Regeln des Gesprächsmodus aus sprechen.md; leer, wenn die Abschnitte fehlen."""
+    text = COMMAND.read_text(encoding="utf-8")
+    anfang = text.find(EINSCHALTEN)
+    ende = text.find(BESTAETIGEN, anfang)
+    if anfang < 0 or ende < 0:
+        return ""
+    return text[anfang + len(EINSCHALTEN):ende].strip()
 
 
 def ansage(eingabe: dict) -> str:
@@ -331,7 +353,7 @@ def _gehoert_uns(pid: int) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Claude-Code-Hooks für den Sprechdienst")
     # abspielen ist intern: der Hintergrundprozess des Fernbetriebs
-    parser.add_argument("ereignis", choices=["stop", "prompt", "abspielen"])
+    parser.add_argument("ereignis", choices=["stop", "prompt", "start", "abspielen"])
     try:
         args = parser.parse_args()
     except SystemExit:
@@ -346,6 +368,20 @@ def main() -> int:
         eingabe = {}
     if not isinstance(eingabe, dict):
         eingabe = {}
+
+    if args.ereignis == "start":
+        try:
+            teil = regeln()
+        except OSError as e:
+            log.error("sprechen.md nicht lesbar: %s", e)
+            return 0
+        if not teil:
+            log.error("Regeln in %s nicht gefunden", COMMAND)
+            return 0
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                 "additionalContext": VORSPANN + teil}},
+                         ensure_ascii=False))
+        return 0
 
     if args.ereignis == "abspielen":
         try:

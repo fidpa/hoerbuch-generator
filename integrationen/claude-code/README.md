@@ -9,7 +9,7 @@ Tabellen, Code und Pfaden bleibt im Fenster stehen. Eine neue Eingabe bricht die
 | Teil | Datei | Aufgabe |
 |---|---|---|
 | Sprechdienst | `sprechen.sh`, `werkzeuge/sprechdienst.py` | hält das Modell geladen, spricht Satz für Satz, Stopp je Sitzung |
-| Hook-Skript | `claude_sprechen.py` | Stop: Sprechmarke aus der Antwort an `sprechen.sh`, auf Wunsch über ssh und an das zuletzt benutzte Gerät; UserPromptSubmit: `--stopp` |
+| Hook-Skript | `claude_sprechen.py` | Stop: Sprechmarke aus der Antwort an `sprechen.sh`, auf Wunsch über ssh und an das zuletzt benutzte Gerät; UserPromptSubmit: `--stopp`; SessionStart (optional): Modus von Anfang an |
 | Command | `sprechen.md` | `/sprechen` schaltet den Modus ein, `/sprechen datei` auf Audiodateien in der Antwort um, `/sprechen aus` wieder aus |
 
 Im Gesprächsmodus schreibt Claude ans Ende jeder Antwort einen HTML-Kommentar
@@ -46,6 +46,20 @@ Der erste Aufruf lädt das Modell und braucht deshalb länger.
 ```
 
 `async` beim Stop-Hook hält Claude Code nicht auf, während der Auftrag abgegeben wird.
+
+**Optional: immer an.** Ein dritter Hook lässt jede Sitzung im Gesprächsmodus beginnen, ohne
+`/sprechen`; `/sprechen aus` schaltet ihn für die Sitzung ab:
+
+```json
+"SessionStart": [{"hooks": [{"type": "command",
+  "command": "<REPO>/.venv/bin/python <REPO>/integrationen/claude-code/claude_sprechen.py start"}]}]
+```
+
+Er gibt den Abschnitt „Modus einschalten“ aus `sprechen.md` als Kontext aus, rund 1 000 Tokens
+je Sitzung. SessionStart feuert auch beim Fortsetzen einer Sitzung (`--resume`, `--continue`),
+nach `/clear` und nach dem Kompaktieren; ein vorher abgeschalteter Modus ist danach wieder an.
+Es spricht dann jede Sitzung, auch Sitzungen, die im Hintergrund arbeiten; der Hook erkennt sie
+nicht.
 
 **3. Command verlinken**, für alle Projekte oder nur für eines:
 

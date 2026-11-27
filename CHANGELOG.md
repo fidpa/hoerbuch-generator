@@ -6,6 +6,17 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.6.0] - 2026-11-27: Gesprächsmodus von Anfang an, ohne /sprechen
+
+### Hinzugefügt
+
+- **Gesprächsmodus von Anfang an:** `claude_sprechen.py start` für einen SessionStart-Hook gibt
+  die Regeln aus `sprechen.md` als Kontext aus. Jede Sitzung beginnt dann im Gesprächsmodus,
+  `/sprechen aus` schaltet ihn ab. Der Hook ist optional; ohne ihn bleibt es bei `/sprechen`.
+  Er kostet rund 1 000 Tokens je Sitzung und schaltet den Modus auch beim Fortsetzen, nach
+  `/clear` und nach dem Kompaktieren wieder ein. Die Regeln stehen weiter nur in `sprechen.md`;
+  fehlt dort der Abschnitt, gibt der Hook nichts aus und endet mit Exit 0.
+
 ## [0.5.0] - 2026-11-27: Ton auf dem zuletzt benutzten Gerät, Sprache als Datei fürs Handy
 
 ### Hinzugefügt
@@ -155,6 +166,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.6.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.6.0
 [0.5.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.5.0
 [0.4.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.4.0
 [0.3.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.3.0

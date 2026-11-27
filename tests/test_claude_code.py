@@ -9,6 +9,7 @@ Usage:
     .venv/bin/python -m unittest tests.test_claude_code -v
 """
 
+import io
 import json
 import os
 import subprocess
@@ -229,6 +230,49 @@ class Fernbetrieb(unittest.TestCase):
                 mock.patch.dict(os.environ, {}, clear=False) as umgebung:
             umgebung.pop("SPRECHEN_PLAYER", None)
             self.assertEqual(claude_sprechen.player_befehl()[0], "aplay")
+
+
+class Sitzungsbeginn(unittest.TestCase):
+    """start: Der SessionStart-Hook gibt die Regeln aus sprechen.md als Kontext aus."""
+
+    def test_regeln_als_kontext_ohne_bestaetigung(self):
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "start"],
+                              input=json.dumps({"session_id": "abc", "source": "startup"}),
+                              text=True, capture_output=True, timeout=20)
+        self.assertEqual(lauf.returncode, 0)
+        ausgabe = json.loads(lauf.stdout)["hookSpecificOutput"]
+        self.assertEqual(ausgabe["hookEventName"], "SessionStart")
+        kontext = ausgabe["additionalContext"]
+        self.assertIn("von Anfang an eingeschaltet", kontext)
+        self.assertIn("<!-- sprechen:", kontext)
+        # Wächter für die beiden Überschriften in sprechen.md, an denen regeln() den Abschnitt
+        # erkennt: Fehlt eine, bleibt stdout leer und json.loads oben scheitert
+        self.assertIn("### Knapp", kontext)
+        self.assertIn("### Was sonst gilt", kontext)
+        self.assertNotIn("Bestätige", kontext)
+        self.assertNotIn("## Bei `datei`", kontext)
+
+    def test_ohne_abschnitt_kein_kontext_und_kein_abbruch(self):
+        import claude_sprechen
+        with tempfile.TemporaryDirectory() as ordner:
+            datei = Path(ordner) / "sprechen.md"
+            datei.write_text("# Nur eine Überschrift\n", encoding="utf-8")
+            with mock.patch.object(claude_sprechen, "COMMAND", datei):
+                self.assertEqual(claude_sprechen.regeln(), "")
+                with mock.patch.object(sys, "argv", ["claude_sprechen.py", "start"]), \
+                        mock.patch("sys.stdin", io.StringIO("{}")), \
+                        mock.patch("sys.stdout", new_callable=io.StringIO) as aus:
+                    self.assertEqual(claude_sprechen.main(), 0)
+                self.assertEqual(aus.getvalue(), "")
+
+    def test_fehlende_datei_kein_abbruch(self):
+        import claude_sprechen
+        with mock.patch.object(claude_sprechen, "COMMAND", Path("/gibt/es/nicht/sprechen.md")), \
+                mock.patch.object(sys, "argv", ["claude_sprechen.py", "start"]), \
+                mock.patch("sys.stdin", io.StringIO("{}")), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as aus:
+            self.assertEqual(claude_sprechen.main(), 0)
+        self.assertEqual(aus.getvalue(), "")
 
 
 class Geraetewahl(unittest.TestCase):
