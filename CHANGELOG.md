@@ -6,6 +6,30 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.5.0] - 2026-11-27: Ton auf dem zuletzt benutzten Gerät, Sprache als Datei fürs Handy
+
+### Hinzugefügt
+
+- **Gerätewahl im Gesprächsmodus:** `SPRECHEN_GERAETE` nennt die Geräte, die den Ton abspielen
+  dürfen (ssh-Ziele, `hier` für dieses Gerät). Vor jeder Antwort fragt der Hook ihre
+  Leerlaufzeit ab (macOS `ioreg`, GNOME über D-Bus) und spielt auf dem zuletzt benutzten. Damit
+  hört man Claude Code auch, wenn es auf einem Server oder einem anderen Mac läuft und nur die
+  Oberfläche auf dem Notebook ist. Sind alle Geräte länger als `SPRECHEN_LEERLAUF` Sekunden
+  (Standard 1800) unbenutzt, bleibt die Antwort stumm.
+- **`sprechen.sh --datei` und `/sprechen datei`:** Der Sprechdienst legt die Sprache als MP3 in
+  einem festen Ordner ab (ohne ffmpeg als WAV) und gibt den Pfad aus; Dateien älter als sieben
+  Tage löscht der nächste Aufruf. Im Gesprächsmodus `/sprechen datei` bettet Claude die Datei in
+  jede Antwort ein, für Oberflächen wie T3 Code auf dem Handy, die sie per Tippen abspielen.
+
+### Behoben
+
+- **`sprechen.sh` über ssh:** In einer ssh-Sitzung fehlt `/opt/homebrew/bin` im PATH. Startete
+  ein solcher Aufruf den Sprechdienst, etwa im Fernbetrieb, fand der Dienst `ffmpeg` nicht und
+  sprach ohne Tempo und ohne Anhebung der Lautstärke. `sprechen.sh` nimmt den Ordner jetzt in
+  den PATH auf, wenn er existiert.
+- **`ffplay` im Fernbetrieb:** Der Player schrieb trotz `-loglevel error` laufend seine
+  Statuszeile nach `wiedergabe.log`. `-nostats` stellt das ab.
+
 ## [0.4.0] - 2026-11-27: Gesprächsmodus auch auf Geräten ohne MLX, der Mac rechnet über ssh
 
 ### Hinzugefügt
@@ -131,6 +155,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.5.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.5.0
 [0.4.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.4.0
 [0.3.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.3.0
 [0.2.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.2.0

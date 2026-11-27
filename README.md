@@ -146,6 +146,8 @@ Der erste Aufruf startet im Hintergrund einen Dienst (`werkzeuge/sprechdienst.py
 echo "Das ist ein Satz vom Mac." | ssh mac '~/hoerbuch-generator/sprechen.sh --liefern -' | aplay -q -t raw -f S16_LE -r 24000 -c 1
 ```
 
+**Als Datei:** Mit `--datei` legt der Dienst die Sprache als MP3 unter `~/Library/Caches/hoerbuch-generator/dateien/` ab und gibt den Pfad aus, etwa zum Einbetten in eine Chat-Oberfläche. Dateien älter als sieben Tage löscht der nächste Aufruf.
+
 **Claude Code:** Fertig angebunden ist der Dienst an Claude Code. Mit `/sprechen` hängt Claude jeder Antwort eine kurze, für das Ohr geschriebene Fassung an, und zwei Hooks geben sie an `sprechen.sh`. Hook-Skript, Command und Einrichtung: [integrationen/claude-code/](integrationen/claude-code/README.md).
 
 Aus einer macOS-Sandbox heraus (etwa aus dem Shell-Werkzeug eines KI-Agenten) läuft der Dienst nicht: Dort fehlen Metal und Unix-Sockets. Ein Hook oder ein Terminal startet ihn außerhalb.

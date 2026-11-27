@@ -35,6 +35,17 @@ zurück. Eine Sperre unter XDG_RUNTIME_DIR (sonst ~/.cache) hält mehrere Sitzun
 Geräts in der Reihe; der Prompt-Hook beendet die Wiedergabe der eigenen Sitzung hier und
 stoppt den Auftrag auf dem Mac. Läuft für die Sitzung nichts, unterbleibt der ssh-Aufruf.
 
+Ton auf dem Gerät, an dem gerade gearbeitet wird, etwa wenn Claude Code auf einem Server oder
+einem anderen Mac läuft und nur die Oberfläche hier ist (Terminal per ssh, T3 Code):
+    SPRECHEN_GERAETE   Geräte, die den Ton abspielen dürfen, durch Leerzeichen getrennt: ssh-Ziele
+                       oder "hier" für dieses Gerät. Vor jeder Antwort fragt der Hook alle nach
+                       der Zeit seit der letzten Eingabe an Tastatur oder Maus (macOS: ioreg,
+                       Linux mit GNOME: Mutter IdleMonitor) und spielt auf dem zuletzt benutzten.
+    SPRECHEN_LEERLAUF  Sekunden; ist jedes Gerät länger unbenutzt, bleibt die Antwort stumm
+                       (Standard: 1800). Dann wird woanders gearbeitet, etwa am Handy.
+Auf einem anderen Gerät spielt paplay oder ffplay, aufgerufen über ssh. Ohne SPRECHEN_ENTFERNT
+rechnet dieses Gerät selbst; fällt die Wahl auf "hier", spielt der Dienst wie gewohnt.
+
 Hooks laufen außerhalb einer Bash-Sandbox; nur dort stehen Metal und Audio zur Verfügung.
 Fehler gehen nach stderr und brechen die Sitzung nie ab (Exit 0). Nur Standardbibliothek.
 """
@@ -55,6 +66,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -71,9 +83,30 @@ PLAYER = [
     ["paplay", "--raw", "--rate=24000", "--channels=1", "--format=s16le"],
     ["pw-play", "--raw", "--rate", "24000", "--channels", "1", "--format", "s16", "-"],
     ["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1"],
-    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error",
+    ["ffplay", "-nodisp", "-nostats", "-autoexit", "-loglevel", "error",
      "-f", "s16le", "-ar", "24000", "-ch_layout", "mono", "-"],
 ]
+# Gerätewahl: "hier" ist dieses Gerät, alles andere ein ssh-Ziel
+HIER = "hier"
+LEERLAUF_MAX = 1800
+ERKENNUNG_TIMEOUT = 6
+# Sekunden seit der letzten Eingabe, als Shell-Befehl für das Gerät selbst. Über ssh fehlt die
+# Session-Bus-Adresse, unter /run/user/<uid>/bus liegt sie bei systemd-Sitzungen
+LEERLAUF = (
+    "if command -v ioreg >/dev/null 2>&1; then "
+    "ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'; "
+    'else DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}" '
+    "gdbus call --session --dest org.gnome.Mutter.IdleMonitor "
+    "--object-path /org/gnome/Mutter/IdleMonitor/Core "
+    "--method org.gnome.Mutter.IdleMonitor.GetIdletime | awk '{print int($2/1000)}'; fi")
+# Player auf einem anderen Gerät; über ssh fehlt Homebrew im PATH
+FERN_PLAYER = (
+    'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; '
+    "if command -v paplay >/dev/null 2>&1; then "
+    "exec paplay --raw --rate=24000 --channels=1 --format=s16le; "
+    "elif command -v ffplay >/dev/null 2>&1; then "
+    "exec ffplay -nodisp -nostats -autoexit -loglevel error -f s16le -ar 24000 -ch_layout mono -; "
+    "else echo 'kein Player (paplay, ffplay)' >&2; exit 127; fi")
 
 log = logging.getLogger("claude_sprechen")
 
@@ -142,6 +175,56 @@ def player_befehl() -> list[str] | None:
     return next((p for p in PLAYER if shutil.which(p[0])), None)
 
 
+def rechen_befehl(args: list[str]) -> list[str]:
+    """sprechen.sh mit --liefern: auf dem Mac aus SPRECHEN_ENTFERNT, sonst auf diesem Gerät."""
+    ziel = os.environ.get("SPRECHEN_ENTFERNT", "")
+    return entfernter_befehl(ziel, args) if ziel else ["/bin/bash", str(sprechen_sh()), *args]
+
+
+# --- Gerätewahl --------------------------------------------------------------------------
+
+def geraete() -> list[str]:
+    return os.environ.get("SPRECHEN_GERAETE", "").split()
+
+
+def _leerlauf_befehl(geraet: str) -> list[str]:
+    return ["/bin/sh", "-c", LEERLAUF] if geraet == HIER else ["ssh", *SSH_OPTIONEN, geraet, LEERLAUF]
+
+
+def geraet_waehlen(kandidaten: list[str]) -> str | None:
+    """Das Gerät mit der kürzesten Zeit seit der letzten Eingabe; None, wenn keines antwortet
+    oder alle länger als SPRECHEN_LEERLAUF unbenutzt sind. Die Geräte antworten parallel,
+    ein schlafendes kostet höchstens ERKENNUNG_TIMEOUT."""
+    laeufe = {}
+    for geraet in kandidaten:
+        try:
+            laeufe[geraet] = subprocess.Popen(_leerlauf_befehl(geraet), stdin=subprocess.DEVNULL,
+                                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            log.error("Leerlauf von %s nicht abfragbar: %s", geraet, e)
+    werte: dict[str, int] = {}
+    frist = time.monotonic() + ERKENNUNG_TIMEOUT
+    for geraet, lauf in laeufe.items():
+        try:
+            aus, _ = lauf.communicate(timeout=max(0.1, frist - time.monotonic()))
+            werte[geraet] = int(aus.split()[0])
+        except subprocess.TimeoutExpired:
+            lauf.kill()
+            lauf.wait()
+        except (ValueError, IndexError):
+            pass  # keine Zahl: kein ioreg, kein GNOME, oder ssh scheiterte
+    try:
+        grenze = float(os.environ.get("SPRECHEN_LEERLAUF", LEERLAUF_MAX))
+    except ValueError:
+        grenze = LEERLAUF_MAX
+    if not werte:
+        log.info("Gerätewahl: kein Gerät antwortet")
+        return None
+    geraet, sekunden = min(werte.items(), key=lambda w: w[1])
+    log.info("Gerätewahl: %s", ", ".join(f"{g} {s} s" for g, s in werte.items()))
+    return geraet if sekunden <= grenze else None
+
+
 def zustand_ordner() -> Path:
     basis = os.environ.get("XDG_RUNTIME_DIR") or str(Path.home() / ".cache")
     return Path(basis) / "hoerbuch-generator"
@@ -165,24 +248,34 @@ def wiedergabe_starten(args: list[str], text: str, quelle: str) -> None:
 
 
 def abspielen(auftrag: dict) -> int:
-    """Im Hintergrundprozess: der Reihe nach warten, dann ssh-Ton in den Player leiten.
-    Die Marke mit der eigenen PID lässt den Prompt-Hook diesen Prozess samt ssh und Player
-    beenden; sie fallen in dieselbe Prozessgruppe."""
+    """Im Hintergrundprozess: Gerät wählen, der Reihe nach warten, dann den gelieferten Ton in
+    den Player leiten. Die Marke mit der eigenen PID lässt den Prompt-Hook diesen Prozess samt
+    ssh und Player beenden; sie fallen in dieselbe Prozessgruppe."""
     ziel = os.environ.get("SPRECHEN_ENTFERNT", "")
-    player = player_befehl()
-    if not ziel or not player:
-        log.error("kein Fernziel oder kein Player (paplay, pw-play, aplay, ffplay, SPRECHEN_PLAYER)")
-        return 1
     ordner = zustand_ordner()
     ordner.mkdir(parents=True, exist_ok=True)
     marke = ordner / f"laeuft-{_kennung(auftrag.get('quelle', ''))}-{os.getpid()}"
     marke.touch()
     try:
+        geraet = None
+        if geraete():
+            geraet = geraet_waehlen(geraete())
+            if geraet is None:
+                log.info("kein Gerät in Benutzung, die Antwort bleibt stumm")
+                return 0
+            if geraet == HIER and not ziel:
+                # Rechnet und spielt dieses Gerät, spielt der Dienst selbst wie ohne Gerätewahl
+                return aufrufen([*auftrag["args"], "-"], auftrag["text"])
+        player = player_befehl() if geraet in (None, HIER) else ["ssh", *SSH_OPTIONEN, geraet,
+                                                                 FERN_PLAYER]
+        if not player:
+            log.error("kein Player (paplay, pw-play, aplay, ffplay, SPRECHEN_PLAYER)")
+            return 1
         with open(ordner / "wiedergabe.lock", "w") as sperre:
             # Zwei Sitzungen auf diesem Gerät: Der Mac liefert schneller, als der Player
             # spielt, und beide Antworten klängen sonst übereinander
             fcntl.flock(sperre, fcntl.LOCK_EX)
-            ssh = subprocess.Popen(entfernter_befehl(ziel, [*auftrag["args"], "--liefern", "-"]),
+            ssh = subprocess.Popen(rechen_befehl([*auftrag["args"], "--liefern", "-"]),
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             spieler = subprocess.Popen(player, stdin=ssh.stdout)
             ssh.stdout.close()  # nur der Player liest; endet er, bekommt ssh SIGPIPE
@@ -195,7 +288,7 @@ def abspielen(auftrag: dict) -> int:
             ssh.wait()
             # Endet der Player vorzeitig, stirbt ssh an SIGPIPE; das ist kein Fehler des Macs
             if spieler.returncode == 0 and ssh.returncode != 0:
-                log.error("sprechen.sh auf %s endete mit %s", ziel, ssh.returncode)
+                log.error("sprechen.sh auf %s endete mit %s", ziel or HIER, ssh.returncode)
             elif spieler.returncode != 0:
                 log.error("Player %s endete mit %s", player[0], spieler.returncode)
     finally:
@@ -269,6 +362,9 @@ def main() -> int:
 
     if args.ereignis == "prompt":
         if not entfernt:
+            # Mit Gerätewahl läuft die Wiedergabe womöglich als Hintergrundprozess; ohne Marke
+            # kostet das nur einen Blick in den Ordner
+            wiedergabe_stoppen(sitzung)
             aufrufen(["--stopp", *quelle])
             return 0
         # Erst hier verstummen, das geht sofort; dann den Auftrag auf dem Mac abbrechen.
@@ -291,7 +387,7 @@ def main() -> int:
                     "-t", os.environ.get("SPRECHEN_TEMPO", TEMPO),
                     "--lauter", os.environ.get("SPRECHEN_LAUTER", LAUTER), *quelle,
                     *(["--ansage", name] if name else [])]
-        if entfernt:
+        if entfernt or geraete():
             try:
                 wiedergabe_starten(sprechen, text, sitzung)
             except OSError as e:

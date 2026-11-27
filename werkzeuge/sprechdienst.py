@@ -7,7 +7,7 @@ Fuer lange Texte bleibt vorlesen.sh der Weg (MP3, Fortsetzen nach Abbruch).
 
 Usage:
     .venv/bin/python werkzeuge/sprechdienst.py [-v STIMME] [-t TEMPO] [--lauter DB] [--mit-atem]
-        [--warten | --liefern] [--quelle ID [--ansage TEXT]] [TEXT | -]
+        [--warten | --liefern | --datei] [--quelle ID [--ansage TEXT]] [TEXT | -]
     .venv/bin/python werkzeuge/sprechdienst.py --stopp [--quelle ID] | --status | --beenden
 
 Aufbau:
@@ -33,6 +33,9 @@ Aufbau:
       spielt der Dienst nichts ab, sondern schreibt den Ton Satz fuer Satz als 16-Bit-PCM
       (24 kHz, mono) nach stdout. Ueber ssh aufgerufen, rechnet so ein Mac fuer ein anderes
       Geraet, das den Ton selbst abspielt; Warteschlange und Stopp je Quelle gelten weiter.
+      Mit --datei legt der Aufruf den Ton als MP3 (ohne ffmpeg als WAV) in DATEI_ORDNER ab
+      und gibt den Pfad aus, fuer Oberflaechen, die eine Audiodatei in der Antwort abspielen
+      (etwa T3 Code am Handy).
     - Metal steht in einer macOS-Sandbox nicht zur Verfuegung. Wer den Dienst aus einer
       Sandbox heraus startet (etwa aus einem Agenten-Werkzeug), bekommt eine Fehlermeldung
       statt Sprache; Hooks oder ein Terminal starten ihn ausserhalb.
@@ -52,6 +55,7 @@ Protokoll: eine JSON-Zeile je Verbindung, eine JSON-Zeile als Antwort.
 
 import argparse
 import fcntl
+import io
 import json
 import logging
 import os
@@ -63,6 +67,7 @@ import subprocess
 import sys
 import threading
 import time
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -84,6 +89,9 @@ MAX_ANFRAGE = 1_000_000  # Bytes je Anfrage
 MAX_LAUTER = 15.0
 LIMIT_DB = -1.5  # Obergrenze des Limiters, Abstand zu 0 dBFS fuer Spitzen zwischen den Samples
 LIEFERN_TIMEOUT = 120.0  # Sekunden, die sendall bei --liefern auf einen lesenden Aufrufer wartet
+# --datei: fester Ordner, damit ein Aufruf als Ausnahme einer Sandbox nirgendwo sonst schreibt
+DATEI_ORDNER = Path.home() / "Library" / "Caches" / "hoerbuch-generator" / "dateien"
+DATEI_ALTER = 7 * 24 * 3600  # Sekunden; ältere Dateien löscht der nächste Aufruf
 
 log = logging.getLogger("sprechdienst")
 
@@ -652,6 +660,44 @@ def empfangen(anfrage: dict, ausgabe) -> int:
     return 0
 
 
+def datei_schreiben(anfrage: dict) -> Path | None:
+    """Ton wie mit --liefern holen und als MP3 in DATEI_ORDNER ablegen, ohne ffmpeg als WAV.
+    Gedacht für Oberflächen, die eine Audiodatei in der Antwort abspielen, etwa auf dem
+    Handy. Dateien älter als DATEI_ALTER löscht dieser Aufruf; None, wenn kein Ton kam."""
+    puffer = io.BytesIO()
+    if empfangen(anfrage, puffer) != 0:
+        return None
+    pcm = puffer.getvalue()
+    if not pcm:
+        log.error("Kein Ton geliefert")
+        return None
+    DATEI_ORDNER.mkdir(parents=True, exist_ok=True)
+    grenze = time.time() - DATEI_ALTER
+    for alt in DATEI_ORDNER.glob("sprechen-*"):
+        try:
+            if alt.stat().st_mtime < grenze:
+                alt.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass  # ein zweiter Aufruf war schneller
+    name = f"sprechen-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+    ziel = DATEI_ORDNER / f"{name}.mp3"
+    try:
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "s16le", "-ar", str(qwen.SAMPLE_RATE),
+                        "-ac", "1", "-i", "pipe:0", "-b:a", "64k", "-y", str(ziel)],
+                       input=pcm, capture_output=True, check=True)
+        return ziel
+    except (OSError, subprocess.CalledProcessError) as e:
+        log.warning("Kein MP3 (%s), lege WAV ab", e)
+        ziel.unlink(missing_ok=True)  # ein abgebrochenes ffmpeg hinterlässt sonst ein halbes MP3
+    ziel = ziel.with_suffix(".wav")
+    with wave.open(str(ziel), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(qwen.SAMPLE_RATE)
+        w.writeframes(pcm)
+    return ziel
+
+
 def dienst_starten() -> bool:
     """Dienst im Hintergrund starten, falls er nicht laeuft; True, sobald er erreichbar ist."""
     pfad = socket_pfad()
@@ -688,6 +734,9 @@ def main() -> int:
     parser.add_argument("--liefern", action="store_true",
                         help="Ton nicht abspielen, sondern als 16-Bit-PCM (24 kHz, mono) nach "
                              "stdout schreiben, etwa für einen Player auf einem anderen Gerät")
+    parser.add_argument("--datei", action="store_true",
+                        help="Ton nicht abspielen, sondern als MP3 (ohne ffmpeg als WAV) unter "
+                             f"{DATEI_ORDNER} ablegen und den Pfad ausgeben")
     gruppe = parser.add_mutually_exclusive_group()
     gruppe.add_argument("--stopp", action="store_true", help="Ausgabe abbrechen, Warteschlange leeren")
     gruppe.add_argument("--status", action="store_true", help="Zustand des Dienstes zeigen")
@@ -720,8 +769,8 @@ def main() -> int:
             print(json.dumps(antwort, ensure_ascii=False, indent=2))
         return 0 if antwort.get("ok") else 1
 
-    if args.liefern and args.warten:
-        log.error("--liefern und --warten schließen sich aus")
+    if args.liefern + args.warten + args.datei > 1:
+        log.error("--warten, --liefern und --datei schließen sich aus")
         return 1
     if not 0.5 <= args.tempo <= 2.0:
         log.error("Tempo %s liegt nicht zwischen 0.5 und 2.0", args.tempo)
@@ -753,6 +802,16 @@ def main() -> int:
         except (OSError, ValueError) as e:
             log.error("Dienst antwortet nicht: %s", e)
             return 1
+    if args.datei:
+        try:
+            pfad = datei_schreiben(anfrage)
+        except (OSError, ValueError) as e:
+            log.error("Datei nicht erzeugt: %s", e)
+            return 1
+        if pfad is None:
+            return 1
+        print(pfad)
+        return 0
     try:
         antwort = senden({**anfrage, "warten": args.warten},
                          timeout=None if args.warten else 10.0)

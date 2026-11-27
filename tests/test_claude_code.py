@@ -231,5 +231,129 @@ class Fernbetrieb(unittest.TestCase):
             self.assertEqual(claude_sprechen.player_befehl()[0], "aplay")
 
 
+class Geraetewahl(unittest.TestCase):
+    """SPRECHEN_GERAETE: Ein falsches ssh meldet je Gerät die Leerlaufzeit aus LEERLAUF_<gerät>
+    und schreibt, was ein Player dort bekäme, nach ton.<gerät>; ein falsches ioreg meldet die
+    Leerlaufzeit dieses Geräts, ein falsches sprechen.sh rechnet hier."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="geraete"))
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.protokoll = self.tmp / "aufrufe.txt"
+        self.log = self.tmp / "run" / "hoerbuch-generator" / "wiedergabe.log"
+        dateien = {
+            "bin/ssh": '#!/bin/sh\nprintf "ssh %s\\n" "$*" >> "$PROTOKOLL"\n'
+                       'vorletztes=""; letztes=""\n'
+                       'for a; do vorletztes="$letztes"; letztes="$a"; done\n'
+                       'case "$letztes" in\n'
+                       '  *HIDIdleTime*) eval "printf \'%s\' \\"\\${LEERLAUF_$vorletztes:-}\\"";;\n'
+                       '  *--liefern*) cat > /dev/null; printf PCM;;\n'
+                       '  *ffplay*) cat > "$TON.$vorletztes";;\n'
+                       'esac\n',
+            "bin/ioreg": '#!/bin/sh\necho "    | |   \\"HIDIdleTime\\" = $IOREG_NS"\n',
+            "generator/sprechen.sh": '#!/bin/sh\nprintf "sprechen.sh %s\\n" "$*" >> "$PROTOKOLL"\n'
+                                     'case "$*" in *--liefern*) cat > /dev/null; printf PCM;;\n'
+                                     '*) cat > /dev/null;; esac\n',
+        }
+        for name, inhalt in dateien.items():
+            datei = self.tmp / name
+            datei.parent.mkdir(exist_ok=True)
+            datei.write_text(inhalt, encoding="utf-8")
+            datei.chmod(0o755)
+        self.env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.tmp),
+                    "XDG_RUNTIME_DIR": str(self.tmp / "run"),
+                    "HOERBUCH_GENERATOR": str(self.tmp / "generator"),
+                    "PROTOKOLL": str(self.protokoll), "TON": str(self.tmp / "ton")}
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _stop(self, **env: str) -> None:
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "stop"], text=True,
+                              input=json.dumps({"session_id": "abc", "last_assistant_message":
+                                                "<!-- sprechen: Hallo. -->"}),
+                              capture_output=True, env={**self.env, **env}, timeout=20)
+        self.assertEqual(lauf.returncode, 0)
+
+    def _warten(self, bedingung) -> bool:
+        import time
+        frist = time.monotonic() + 10
+        while time.monotonic() < frist:
+            if bedingung():
+                time.sleep(0.1)  # der Hintergrundprozess schreibt noch zu Ende
+                return True
+            time.sleep(0.05)
+        return False
+
+    def _ton(self, geraet: str) -> Path:
+        return self.tmp / f"ton.{geraet}"
+
+    def test_spielt_auf_dem_zuletzt_benutzten_geraet(self):
+        self._stop(SPRECHEN_ENTFERNT="mac", SPRECHEN_GERAETE="zuhause buero",
+                   LEERLAUF_zuhause="11325", LEERLAUF_buero="0")
+        self.assertTrue(self._warten(lambda: self._ton("buero").exists()))
+        self.assertEqual(self._ton("buero").read_bytes(), b"PCM")
+        self.assertFalse(self._ton("zuhause").exists())
+
+    def test_alle_lange_unbenutzt_bleibt_stumm(self):
+        self._stop(SPRECHEN_ENTFERNT="mac", SPRECHEN_GERAETE="zuhause buero",
+                   LEERLAUF_zuhause="5000", LEERLAUF_buero="4000", SPRECHEN_LEERLAUF="600")
+        self.assertTrue(self._warten(lambda: self.log.exists() and
+                                     "stumm" in self.log.read_text(encoding="utf-8")))
+        self.assertNotIn("--liefern", self.protokoll.read_text(encoding="utf-8"))
+
+    def test_ohne_fernziel_rechnet_hier_und_spielt_dort(self):
+        self._stop(SPRECHEN_GERAETE="hier buero", IOREG_NS="100000000000", LEERLAUF_buero="3")
+        self.assertTrue(self._warten(lambda: self._ton("buero").exists()))
+        self.assertEqual(self._ton("buero").read_bytes(), b"PCM")
+        self.assertIn("sprechen.sh -v", self.protokoll.read_text(encoding="utf-8"))
+
+    def test_hier_ohne_fernziel_spricht_der_dienst_selbst(self):
+        self._stop(SPRECHEN_GERAETE="hier buero", IOREG_NS="2000000000", LEERLAUF_buero="300")
+        self.assertTrue(self._warten(lambda: self.protokoll.exists() and
+                                     "sprechen.sh -v" in self.protokoll.read_text(encoding="utf-8")))
+        aufrufe = self.protokoll.read_text(encoding="utf-8")
+        self.assertNotIn("--liefern", aufrufe)
+        self.assertTrue(aufrufe.rstrip().endswith("-"), aufrufe)
+
+    def test_linux_mit_gnome_ueber_dbus(self):
+        # Ohne ioreg fragt der Befehl den Mutter IdleMonitor; gdbus meldet Millisekunden
+        import claude_sprechen
+        (self.bin / "ioreg").unlink()
+        gdbus = self.bin / "gdbus"
+        gdbus.write_text('#!/bin/sh\necho "(uint64 42000,)"\n', encoding="utf-8")
+        gdbus.chmod(0o755)
+        with mock.patch.dict(os.environ, {**self.env, "LEERLAUF_buero": "100"}):
+            self.assertEqual(claude_sprechen.geraet_waehlen(["hier", "buero"]), "hier")
+        with mock.patch.dict(os.environ, {**self.env, "LEERLAUF_buero": "41"}):
+            self.assertEqual(claude_sprechen.geraet_waehlen(["hier", "buero"]), "buero")
+
+    def test_prompt_beendet_die_wiedergabe_auch_ohne_fernziel(self):
+        import claude_sprechen
+        run = self.tmp / "run" / "hoerbuch-generator"
+        run.mkdir(parents=True)
+        laufend = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                    "claude_sprechen"], start_new_session=True)
+        (run / f"laeuft-{claude_sprechen._kennung('abc')}-{laufend.pid}").touch()
+        try:
+            lauf = subprocess.run([sys.executable, str(SKRIPT), "prompt"],
+                                  input=json.dumps({"session_id": "abc"}), text=True,
+                                  capture_output=True, timeout=20,
+                                  env={**self.env, "SPRECHEN_GERAETE": "hier buero"})
+            self.assertEqual(lauf.returncode, 0)
+            self.assertIsNotNone(laufend.wait(timeout=5))
+        finally:
+            laufend.kill()
+            laufend.wait()
+        self.assertIn("sprechen.sh --stopp --quelle abc", self.protokoll.read_text(encoding="utf-8"))
+
+    def test_kein_geraet_antwortet(self):
+        import claude_sprechen
+        with mock.patch.dict(os.environ, self.env):
+            self.assertIsNone(claude_sprechen.geraet_waehlen(["schlaeft"]))
+
+
 if __name__ == "__main__":
     unittest.main()

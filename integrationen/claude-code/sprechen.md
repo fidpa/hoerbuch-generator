@@ -1,6 +1,6 @@
 ---
-description: "Gesprächsmodus an oder aus: Claude hängt jeder Antwort eine gesprochene Fassung an, die der Stop-Hook über den lokalen Sprechdienst (Qwen3-TTS) vorliest."
-argument-hint: "[aus]"
+description: "Gesprächsmodus an oder aus: Claude hängt jeder Antwort eine gesprochene Fassung an, die der Stop-Hook über den Sprechdienst (Qwen3-TTS) vorliest, oder mit datei als eingebettete Audiodatei."
+argument-hint: "[aus | datei]"
 disable-model-invocation: true
 ---
 
@@ -11,6 +11,38 @@ Argument: `$ARGUMENTS`
 ## Bei `aus`
 
 Ab sofort keine Sprechmarken mehr anhängen. Antworte nur mit „Der Gesprächsmodus ist aus.“, ohne Marke. Sonst nichts tun.
+
+## Bei `datei`
+
+Für Oberflächen, die eine Audiodatei in der Antwort abspielen, etwa T3 Code auf dem Handy: Dort
+läuft kein Player, den der Hook erreicht, also kommt die gesprochene Fassung als Datei mit.
+
+Für den Rest dieser Sitzung, bis `/sprechen` oder `/sprechen aus`, gilt für **jede** fertige
+Antwort:
+
+1. Die gesprochene Fassung nach den Regeln unten formulieren („Knapp“, „Natürlich“).
+2. Vor dem Schreiben der Antwort `sprechen.sh` dieses Repos aufrufen, als einzelnen Befehl ohne
+   Pipe oder Verkettung und den Text in einfachen Anführungszeichen:
+   `<REPO>/sprechen.sh --datei -v marketing -t 1.1 --lauter 8 '<gesprochene Fassung>'`.
+   Die gesprochene Fassung enthält deshalb keinen Apostroph („geht es“ statt „geht's“).
+   `<REPO>` einmal je Sitzung ermitteln. Diese Datei liegt im Repo unter
+   `integrationen/claude-code/sprechen.md` und ist meist als Link eingebunden:
+   `readlink -f .claude/commands/sprechen.md || readlink -f ~/.claude/commands/sprechen.md`
+   liefert das Ziel, `<REPO>` ist der Teil davor. Der Befehl gibt den Pfad einer MP3 aus.
+3. Die Antwort schreiben und als letzte Zeile, allein auf der Zeile, die Datei einbetten:
+   `![Gesprochene Fassung](<Pfad>)`.
+
+Keine Sprechmarke: Sonst spräche der Stop-Hook dieselbe Fassung zusätzlich auf einem Rechner.
+Scheitert der Aufruf, die Antwort ohne Datei schreiben und den Fehler in einem Satz nennen.
+„Dienst nicht erreichbar“ heißt meist: Der Dienst lief nicht, und ein Start aus einer Sandbox
+scheitert, weil dort Metal fehlt. Dann nennen, dass ein Aufruf von `sprechen.sh` im Terminal oder
+eine Antwort mit `/sprechen` (Ton) ihn startet; danach hält er 20 Minuten.
+
+Bestätige mit genau dieser Antwort, ohne Datei:
+
+```
+Der Gesprächsmodus ist an, die gesprochene Fassung kommt als Datei.
+```
 
 ## Sonst: Modus einschalten
 

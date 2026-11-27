@@ -9,8 +9,8 @@ Tabellen, Code und Pfaden bleibt im Fenster stehen. Eine neue Eingabe bricht die
 | Teil | Datei | Aufgabe |
 |---|---|---|
 | Sprechdienst | `sprechen.sh`, `werkzeuge/sprechdienst.py` | hält das Modell geladen, spricht Satz für Satz, Stopp je Sitzung |
-| Hook-Skript | `claude_sprechen.py` | Stop: Sprechmarke aus der Antwort an `sprechen.sh`; UserPromptSubmit: `--stopp` |
-| Command | `sprechen.md` | `/sprechen` schaltet den Modus ein, `/sprechen aus` wieder aus |
+| Hook-Skript | `claude_sprechen.py` | Stop: Sprechmarke aus der Antwort an `sprechen.sh`, auf Wunsch über ssh und an das zuletzt benutzte Gerät; UserPromptSubmit: `--stopp` |
+| Command | `sprechen.md` | `/sprechen` schaltet den Modus ein, `/sprechen datei` auf Audiodateien in der Antwort um, `/sprechen aus` wieder aus |
 
 Im Gesprächsmodus schreibt Claude ans Ende jeder Antwort einen HTML-Kommentar
 `<!-- sprechen: … -->`. Nur dieser Text wird gesprochen. Ohne `/sprechen` gibt es keine Marke,
@@ -64,6 +64,7 @@ ihn beendet; den nächsten Start übernimmt der Hook.
 |---|---|
 | Gesprächsmodus an | `/sprechen` |
 | Gesprächsmodus aus | `/sprechen aus` |
+| Audiodatei in der Antwort statt Ton, etwa am Handy | `/sprechen datei`; zurück mit `/sprechen` |
 | Ausgabe abbrechen | etwas Neues eingeben, oder `./sprechen.sh --stopp` |
 | Dienst beenden | `./sprechen.sh --beenden`; sonst endet er 20 Minuten nach dem letzten Auftrag (Eingaben ohne gesprochene Antwort zählen nicht) |
 
@@ -84,6 +85,8 @@ oder unter `env` in den Einstellungen von Claude Code:
 | `SPRECHEN_STIMME` | `marketing` | Stimme aus `stimmen/`, ruhiger Gesprächston |
 | `SPRECHEN_TEMPO` | `1.1` | Sprechtempo, 0.5 bis 2.0 |
 | `SPRECHEN_LAUTER` | `8` | Anhebung in dB, 0 bis 15, mit Limiter |
+| `SPRECHEN_ENTFERNT`, `SPRECHEN_ENTFERNT_REPO`, `SPRECHEN_PLAYER` | leer | Fernbetrieb, siehe unten |
+| `SPRECHEN_GERAETE`, `SPRECHEN_LEERLAUF` | leer, `1800` | Gerätewahl, siehe unten |
 
 **Lautstärke:** Die Stimmen liegen bei rund −21 LUFS, Musik bei Streamingdiensten bei rund
 −14 LUFS. Mit 8 dB lag `marketing.wav` bei −14,0 LUFS (gemessen am 26.11.2026). Geht die Stimme
@@ -142,6 +145,51 @@ Reihe. Eine Eingabe beendet die Wiedergabe der eigenen Sitzung hier sofort und s
 Auftrag auf dem Mac. Läuft für die Sitzung nichts, baut die Eingabe keine Verbindung auf. Fehler der Wiedergabe stehen in `wiedergabe.log` im selben Ordner. Der Mac
 muss wach und erreichbar sein; ist er es nicht, bleibt es still, und die Sitzung läuft weiter.
 
+## Ton auf dem Gerät, an dem du gerade arbeitest
+
+Läuft Claude Code auf einem Server oder einem anderen Mac und du arbeitest von einem Notebook
+aus (Terminal per ssh, eine Oberfläche wie T3 Code), gehört der Ton auf das Notebook.
+`SPRECHEN_GERAETE` nennt die Geräte, die ihn abspielen dürfen, als ssh-Ziele; `hier` steht für
+das Gerät, auf dem Claude Code läuft:
+
+```json
+"command": "SPRECHEN_GERAETE='hier macbook' <REPO>/.venv/bin/python <REPO>/integrationen/claude-code/claude_sprechen.py stop"
+```
+
+Vor jeder Antwort fragt der Hook die Geräte parallel, wie lange die letzte Eingabe an Tastatur
+oder Maus zurückliegt (macOS: `ioreg`, Linux mit GNOME: Mutter IdleMonitor über D-Bus), und
+spielt auf dem zuletzt benutzten. Sind alle länger als `SPRECHEN_LEERLAUF` Sekunden unbenutzt
+(Standard 1800), bleibt die Antwort stumm: Dann wird woanders gearbeitet, etwa am Handy, und
+kein Rechner soll in einen leeren Raum sprechen. Ein schlafendes Gerät antwortet nicht und
+verzögert die Antwort um höchstens sechs Sekunden.
+
+| Fall | Einstellung |
+|---|---|
+| Claude Code auf dem Mac mit MLX, Ton auch auf einem Notebook | `SPRECHEN_GERAETE='hier macbook'` |
+| Claude Code auf einem Server ohne Ton, ein Mac rechnet | `SPRECHEN_ENTFERNT=<MAC>` und `SPRECHEN_GERAETE='macbook <MAC>'` |
+
+Auf dem gewählten Gerät spielt `paplay` oder `ffplay` (Homebrew), aufgerufen über ssh; ein
+Repo-Klon ist dort nicht nötig. Fällt die Wahl auf `hier` und rechnet dieses Gerät selbst,
+spielt der Dienst wie ohne Gerätewahl. Die Wahl steht mit den gemessenen Zeiten in
+`wiedergabe.log` (Ordner wie oben). Die Eingabe der eigenen Sitzung bricht die Wiedergabe auch
+auf dem anderen Gerät ab; was der Player dort schon gepuffert hat, klingt noch aus.
+
+## Am Handy: Datei statt Ton (`/sprechen datei`)
+
+Ein Handy erreicht der Hook nicht, es hat kein ssh. Manche Oberflächen spielen aber eine
+Audiodatei ab, die in der Antwort eingebettet ist; T3 Code zeigt eine Markdown-Einbettung auf
+eigener Zeile als Player, auf dem iPhone seit Version 2.2.0 (28.10.2026), gestartet per Tippen.
+`/sprechen datei` schaltet dafür um: Claude ruft vor jeder Antwort `sprechen.sh --datei` auf,
+das die gesprochene Fassung als MP3 unter `~/Library/Caches/hoerbuch-generator/dateien/` ablegt
+und den Pfad ausgibt, und bettet die Datei am Ende der Antwort ein. Eine Sprechmarke gibt es in
+diesem Modus nicht, der Stop-Hook bleibt still. Dateien älter als sieben Tage löscht der nächste
+Aufruf; ältere Antworten zeigen dann keinen Player mehr.
+
+Der Modus braucht den Sprechdienst auf dem Gerät, auf dem Claude Code läuft (Mac mit Apple
+Silicon). In einer Sandbox braucht `sprechen.sh` eine Ausnahme, weil Metal dort fehlt; der feste
+Ablageordner sorgt dafür, dass der Aufruf mit Ausnahme nirgendwo sonst schreibt. Gemessen am
+27.11.2026: rund drei Sekunden für zwei Sätze bei geladenem Modell.
+
 ## Fehlerbilder
 
 | Fehlerbild | Ursache | Lösung |
@@ -152,6 +200,9 @@ muss wach und erreichbar sein; ist er es nicht, bleibt es still, und die Sitzung
 | Ausgabe bricht mitten im Satz ab | Neue Eingabe oder Bericht eines Hintergrund-Agenten in derselben Sitzung | gewollt bei neuer Eingabe; bei Agenten-Berichten nicht abschaltbar |
 | Die Sprechmarke steht sichtbar im Fenster | Die Oberfläche blendet HTML-Kommentare nicht aus | nur Darstellung |
 | Fernbetrieb: kein Ton | Mac nicht erreichbar, ssh fragt nach einem Passwort, oder kein Player gefunden | `wiedergabe.log` lesen; `echo "Das ist ein Satz vom Mac." \| ssh <MAC> '<REPO>/sprechen.sh --liefern -' \| <Player>` von Hand |
+| Gerätewahl: Ton auf dem falschen Gerät oder keiner | Leerlaufzeiten anders als gedacht, Gerät antwortet nicht, oder alle über `SPRECHEN_LEERLAUF` | Zeile `Gerätewahl:` in `wiedergabe.log` lesen |
+| Gerätewahl: Gerät gewählt, aber nichts zu hören | Der Player nimmt die Standardausgabe des Geräts, etwa einen Monitor statt der eingebauten Lautsprecher | Ausgabe am Gerät umstellen (macOS: Systemeinstellungen > Ton > Ausgabe) |
+| `/sprechen datei`: kein Player in der Antwort | Die Einbettung steht nicht allein auf ihrer Zeile, oder die Oberfläche spielt keine Einbettungen ab | Zeile prüfen; ältere T3-Code-Versionen auf dem iPhone zeigen „Image unavailable“ |
 
 ## Tests
 

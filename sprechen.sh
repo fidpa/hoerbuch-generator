@@ -7,6 +7,8 @@
 #   ./sprechen.sh -v dozent -t 1.1 "Text"           # andere Stimme, anderes Tempo
 #   ./sprechen.sh --lauter 8 "Text"                 # 8 dB lauter, etwa gegen Musik
 #   ./sprechen.sh --warten "Text"                   # warten und Zeiten zeigen
+#   ./sprechen.sh --liefern "Text" | <player>       # Ton als PCM nach stdout, etwa über ssh
+#   ./sprechen.sh --datei "Text"                    # als MP3 ablegen, Pfad ausgeben
 #   ./sprechen.sh --quelle ID --ansage "Aus X." -   # Kennung des Aufrufers mitgeben
 #   ./sprechen.sh --stopp [--quelle ID] | --status | --beenden
 #
@@ -24,4 +26,7 @@ readonly PY="${ORDNER}/.venv/bin/python"
 [[ -x "${PY}" ]] || { echo "FEHLER: Umgebung fehlt, zuerst ./einrichten.sh ausführen" >&2; exit 1; }
 # Modelle sind öffentlich; ohne das mahnt Hugging Face bei jedem Lauf einen Token an
 export HF_HUB_VERBOSITY=error
+# Über ssh fehlt Homebrew im PATH. Ein so gestarteter Dienst fände ffmpeg nicht und spräche
+# ohne Tempo und Anhebung; er erbt den PATH dieses Aufrufs
+[[ -d /opt/homebrew/bin && ":${PATH}:" != *":/opt/homebrew/bin:"* ]] && PATH="/opt/homebrew/bin:${PATH}"
 exec "${PY}" "${ORDNER}/werkzeuge/sprechdienst.py" "$@"

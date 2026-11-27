@@ -266,6 +266,62 @@ class SprecherUebersteht(unittest.TestCase):
 
 
 @unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
+class Datei(unittest.TestCase):
+    """--datei: Der gelieferte Ton landet als MP3 (ohne ffmpeg als WAV) im festen Ordner,
+    alte Dateien verschwinden. empfangen ist ersetzt, ein Dienst läuft nicht."""
+
+    def setUp(self):
+        import sprechdienst
+        self.s = sprechdienst
+        self.ordner = Path(tempfile.mkdtemp(prefix="dateien"))
+        self.ton = (b"\x00\x10" * sprechdienst.qwen.SAMPLE_RATE)  # eine Sekunde
+        self.patches = [
+            unittest.mock.patch.object(sprechdienst, "DATEI_ORDNER", self.ordner),
+            unittest.mock.patch.object(sprechdienst, "empfangen",
+                                       lambda anfrage, aus: aus.write(self.ton) and 0),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        shutil.rmtree(self.ordner, ignore_errors=True)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg fehlt")
+    def test_mp3_im_festen_ordner(self):
+        pfad = self.s.datei_schreiben({"cmd": "sprich", "text": "Hallo."})
+        self.assertEqual(pfad.parent, self.ordner)
+        self.assertEqual(pfad.suffix, ".mp3")
+        self.assertGreater(pfad.stat().st_size, 1000)
+
+    def test_ohne_ffmpeg_wav(self):
+        import wave
+        with unittest.mock.patch.object(self.s.subprocess, "run", side_effect=OSError("fehlt")):
+            pfad = self.s.datei_schreiben({"cmd": "sprich", "text": "Hallo."})
+        self.assertEqual(pfad.suffix, ".wav")
+        with wave.open(str(pfad)) as w:
+            self.assertEqual(w.getnframes(), self.s.qwen.SAMPLE_RATE)
+
+    def test_datei_schliesst_liefern_und_warten_aus(self):
+        # Die Prüfung greift vor dem Start des Dienstes, ein Modell braucht es nicht
+        for option in ("--liefern", "--warten"):
+            lauf = subprocess.run([sys.executable, str(REPO / "werkzeuge" / "sprechdienst.py"),
+                                   "--datei", option, "Hallo."],
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(lauf.returncode, 1, option)
+            self.assertIn("schließen sich aus", lauf.stderr)
+
+    def test_alte_dateien_verschwinden(self):
+        alt = self.ordner / "sprechen-alt.mp3"
+        alt.write_bytes(b"x")
+        os.utime(alt, (0, 0))
+        with unittest.mock.patch.object(self.s.subprocess, "run", side_effect=OSError("fehlt")):
+            self.s.datei_schreiben({"cmd": "sprich", "text": "Hallo."})
+        self.assertFalse(alt.exists())
+
+
+@unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
 class Liefern(unittest.TestCase):
     """--liefern: Der Ton geht als 16-Bit-PCM an den Aufrufer statt in den Lautsprecher.
     socketpair statt eines gebundenen Sockets, das geht auch in einer Sandbox; Modell und
