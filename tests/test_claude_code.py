@@ -88,10 +88,35 @@ class Hook(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(aufruf, "")
 
-    def test_prompt_stoppt_nur_die_eigene_sitzung(self):
-        rc, aufruf = self._lauf("prompt", {"prompt": "Weiter", "session_id": "abc"})
-        self.assertEqual(rc, 0)
+    def _prompt(self, text: str, env: dict | None = None) -> tuple[str, str]:
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "prompt"],
+                              input=json.dumps({"prompt": text, "session_id": "abc"}),
+                              text=True, capture_output=True,
+                              env={"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin",
+                                   **(env or {})})
+        self.assertEqual(lauf.returncode, 0)
+        aufruf = self.protokoll.read_text(encoding="utf-8") if self.protokoll.exists() else ""
+        return aufruf, lauf.stdout
+
+    def test_neue_eingabe_laesst_zu_ende_sprechen(self):
+        self.assertEqual(self._prompt("Weiter"), ("", ""))
+
+    def test_stoppwort_stoppt_die_eigene_sitzung_und_erreicht_claude_nicht(self):
+        for wort in ("Psst.", "  still ", "RUHE!", "pst", "Pssst!", "Psssst..."):
+            self.protokoll.unlink(missing_ok=True)
+            aufruf, ausgabe = self._prompt(wort)
+            self.assertEqual(aufruf, "--stopp --quelle abc\n", wort)
+            self.assertEqual(json.loads(ausgabe)["decision"], "block", wort)
+
+    def test_stopp_und_saetze_sind_keine_stoppwoerter(self):
+        # „Stopp“ soll Claude erreichen, etwa um eine laufende Arbeit anzuhalten
+        for text in ("Stopp", "stop", "Psst, eine Frage noch", "still und leise"):
+            self.assertEqual(self._prompt(text), ("", ""), text)
+
+    def test_unterbrechen_wie_bis_0_6_1(self):
+        aufruf, ausgabe = self._prompt("Weiter", {"SPRECHEN_UNTERBRECHEN": "1"})
         self.assertEqual(aufruf, "--stopp --quelle abc\n")
+        self.assertEqual(ausgabe, "")
 
     def test_sitzung_und_projekt_beim_sprechen(self):
         rc, aufruf = self._lauf("stop", {"session_id": "abc", "cwd": "/x/projekte/notizen",
@@ -186,7 +211,7 @@ class Fernbetrieb(unittest.TestCase):
         for q, p in laufend.items():
             (run / f"laeuft-{claude_sprechen._kennung(q)}-{p.pid}").touch()
         try:
-            self.assertEqual(self._lauf("prompt", {"session_id": "abc"}), 0)
+            self.assertEqual(self._lauf("prompt", {"session_id": "abc", "prompt": "Psst"}), 0)
             self.assertIsNotNone(laufend["abc"].wait(timeout=5))
             self.assertIsNone(laufend["andere"].poll())
         finally:
@@ -211,7 +236,7 @@ class Fernbetrieb(unittest.TestCase):
 
     def test_prompt_ohne_wiedergabe_baut_keine_verbindung_auf(self):
         # Sonst kostete jede Eingabe einen ssh-Aufbau, bei schlafendem Mac bis zum Timeout
-        self.assertEqual(self._lauf("prompt", {"session_id": "abc"}), 0)
+        self.assertEqual(self._lauf("prompt", {"session_id": "abc", "prompt": "Psst"}), 0)
         self.assertFalse(self.protokoll.exists())
 
     def test_befehl_quotet_fuer_die_shell_dort(self):
@@ -396,7 +421,8 @@ class Geraetewahl(unittest.TestCase):
         (run / f"laeuft-{claude_sprechen._kennung('abc')}-{laufend.pid}").touch()
         try:
             lauf = subprocess.run([sys.executable, str(SKRIPT), "prompt"],
-                                  input=json.dumps({"session_id": "abc"}), text=True,
+                                  input=json.dumps({"session_id": "abc", "prompt": "Psst"}),
+                                  text=True,
                                   capture_output=True, timeout=20,
                                   env={**self.env, "SPRECHEN_GERAETE": "hier buero"})
             self.assertEqual(lauf.returncode, 0)

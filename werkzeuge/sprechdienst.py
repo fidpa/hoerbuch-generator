@@ -362,9 +362,10 @@ class Dienst:
             return {"ok": False, "fehler": "Tempo muss zwischen 0.5 und 2.0 liegen"}
         if not 0.0 <= lauter <= MAX_LAUTER:
             return {"ok": False, "fehler": f"Lauter muss zwischen 0 und {MAX_LAUTER:g} dB liegen"}
-        # Nur ein Auftrag zaehlt als Aktivitaet. Status und Stopp nicht: Der Hook fuer
-        # Claude Code stoppt bei jeder Eingabe, auch in Sitzungen ohne Gespraechsmodus,
-        # und hielte den Dienst samt Modell sonst unbegrenzt am Leben
+        # Nur ein Auftrag zählt als Aktivität. Status und Stopp nicht: Der Hook für
+        # Claude Code stoppt auch in Sitzungen ohne Gesprächsmodus, mit
+        # SPRECHEN_UNTERBRECHEN=1 bei jeder Eingabe, und hielte den Dienst samt Modell
+        # sonst unbegrenzt am Leben
         self.aktiv = time.monotonic()
         auftrag = Auftrag(text=text, stimme=stimme, tempo=tempo, mit_atem=mit_atem,
                           runde=self.runde, lauter=lauter, quelle=quelle, ansage=ansage,
@@ -399,7 +400,7 @@ class Dienst:
 
     def _stoppen(self, quelle: str = "") -> None:
         """Ausgabe abbrechen. Mit quelle nur die Auftraege dieses Aufrufers, sonst alle:
-        Laufen mehrere Sitzungen nebeneinander, soll eine Eingabe in der einen nicht die
+        Laufen mehrere Sitzungen nebeneinander, soll ein Stopp in der einen nicht die
         Antwort der anderen abschneiden."""
         # Alles unter der Player-Sperre: Der Sprecher reiht Audio nur unter ihr ein und
         # prueft dabei, ob sein Auftrag vorbei ist. Ohne sie konnte der Sprecher zwischen

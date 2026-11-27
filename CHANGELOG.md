@@ -6,6 +6,19 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.7.0] - 2026-11-27: Antworten sprechen zu Ende, „Psst“ bricht ab
+
+### Geändert
+
+- **Eine neue Eingabe unterbricht nicht mehr:** Im Gesprächsmodus spricht die laufende Antwort
+  zu Ende, die nächste reiht sich dahinter ein. Bisher brach jede Eingabe die Ausgabe ihrer
+  Sitzung ab, auch der Bericht eines Hintergrund-Agenten. Abbrechen geht jetzt mit einer
+  Eingabe, die nur aus einem Stoppwort besteht („Psst“, „Pst“, „Still“, „Ruhe“); Satzzeichen,
+  Großschreibung und gedehnte Schreibweisen wie „Pssst!“ aus dem Diktat zählen nicht. Der Hook
+  stoppt die Ausgabe der Sitzung, und Claude bekommt die Eingabe nicht. „Stopp“ ist bewusst
+  kein Stoppwort, damit es Claude selbst anhalten kann. `SPRECHEN_UNTERBRECHEN=1` stellt das
+  alte Verhalten wieder her.
+
 ## [0.6.1] - 2026-11-27: Antworten auf macOS-Geräten vom ersten Wort an
 
 ### Behoben
@@ -178,6 +191,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.7.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.7.0
 [0.6.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.6.1
 [0.6.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.6.0
 [0.5.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.5.0

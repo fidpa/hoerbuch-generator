@@ -2,14 +2,15 @@
 
 Mit `/sprechen` liest Claude Code jede Antwort in einer kurzen, für das Ohr geschriebenen
 Fassung vor, lokal mit den Stimmen dieses Repos und ohne Cloud. Die geschriebene Antwort mit
-Tabellen, Code und Pfaden bleibt im Fenster stehen. Eine neue Eingabe bricht die Ausgabe ab.
+Tabellen, Code und Pfaden bleibt im Fenster stehen. Eine neue Eingabe lässt die laufende Antwort
+zu Ende sprechen; „Psst“ als einzige Eingabe bricht sie ab.
 
 ## So arbeiten die Teile zusammen
 
 | Teil | Datei | Aufgabe |
 |---|---|---|
 | Sprechdienst | `sprechen.sh`, `werkzeuge/sprechdienst.py` | hält das Modell geladen, spricht Satz für Satz, Stopp je Sitzung |
-| Hook-Skript | `claude_sprechen.py` | Stop: Sprechmarke aus der Antwort an `sprechen.sh`, auf Wunsch über ssh und an das zuletzt benutzte Gerät; UserPromptSubmit: `--stopp`; SessionStart (optional): Modus von Anfang an |
+| Hook-Skript | `claude_sprechen.py` | Stop: Sprechmarke aus der Antwort an `sprechen.sh`, auf Wunsch über ssh und an das zuletzt benutzte Gerät; UserPromptSubmit: `--stopp` bei einem Stoppwort; SessionStart (optional): Modus von Anfang an |
 | Command | `sprechen.md` | `/sprechen` schaltet den Modus ein, `/sprechen datei` auf Audiodateien in der Antwort um, `/sprechen aus` wieder aus |
 
 Im Gesprächsmodus schreibt Claude ans Ende jeder Antwort einen HTML-Kommentar
@@ -79,15 +80,21 @@ ihn beendet; den nächsten Start übernimmt der Hook.
 | Gesprächsmodus an | `/sprechen` |
 | Gesprächsmodus aus | `/sprechen aus` |
 | Audiodatei in der Antwort statt Ton, etwa am Handy | `/sprechen datei`; zurück mit `/sprechen` |
-| Ausgabe abbrechen | etwas Neues eingeben, oder `./sprechen.sh --stopp` |
+| Ausgabe abbrechen | nur ein Stoppwort eingeben: „Psst“, „Pst“, „Still“ oder „Ruhe“, Satzzeichen egal; Claude bekommt es nicht. Oder `./sprechen.sh --stopp` |
+| Weiterfragen | einfach eingeben: Die laufende Antwort spricht zu Ende, die nächste folgt danach |
 | Dienst beenden | `./sprechen.sh --beenden`; sonst endet er 20 Minuten nach dem letzten Auftrag (Eingaben ohne gesprochene Antwort zählen nicht) |
 
 Der Modus gilt je Sitzung.
 
 **Mehrere Sitzungen:** Antworten aus verschiedenen Sitzungen spricht der Dienst nacheinander.
-Eine Eingabe bricht nur die Ausgabe der eigenen Sitzung ab. Wechselt die sprechende Sitzung,
+Ein Stoppwort bricht nur die Ausgabe der eigenen Sitzung ab. Wechselt die sprechende Sitzung,
 beginnt die Antwort mit dem Namen des Projektordners, etwa „Aus Notizen.“ für einen Ordner
 `notizen`.
+
+**Warum „Stopp“ kein Stoppwort ist:** Mit „Stopp“ hält man oft Claude selbst an, etwa in einer
+Oberfläche, die Eingaben während einer laufenden Antwort weiterreicht. Das Wort soll dann bei
+Claude ankommen und nicht vom Hook abgefangen werden. Bis v0.6.1 brach jede neue Eingabe die
+Ausgabe ab; `SPRECHEN_UNTERBRECHEN=1` stellt das wieder her.
 
 ## Einstellungen
 
@@ -99,6 +106,7 @@ oder unter `env` in den Einstellungen von Claude Code:
 | `SPRECHEN_STIMME` | `marketing` | Stimme aus `stimmen/`, ruhiger Gesprächston |
 | `SPRECHEN_TEMPO` | `1.1` | Sprechtempo, 0.5 bis 2.0 |
 | `SPRECHEN_LAUTER` | `8` | Anhebung in dB, 0 bis 15, mit Limiter |
+| `SPRECHEN_UNTERBRECHEN` | leer | `1`: jede neue Eingabe bricht die laufende Ausgabe ab, wie bis v0.6.1 |
 | `SPRECHEN_ENTFERNT`, `SPRECHEN_ENTFERNT_REPO`, `SPRECHEN_PLAYER` | leer | Fernbetrieb, siehe unten |
 | `SPRECHEN_GERAETE`, `SPRECHEN_LEERLAUF` | leer, `1800` | Gerätewahl, siehe unten |
 
@@ -157,8 +165,8 @@ Erwartet wird `Device(gpu, 0)`.
 **So verhält es sich:** Der Stop-Hook übergibt die Wiedergabe einem Hintergrundprozess und
 kehrt sofort zurück. Mehrere Sitzungen dieses Geräts sprechen nacheinander, eine Sperre unter
 `$XDG_RUNTIME_DIR/hoerbuch-generator/` (sonst `~/.cache/hoerbuch-generator/`) hält sie in der
-Reihe. Eine Eingabe beendet die Wiedergabe der eigenen Sitzung hier sofort und stoppt den
-Auftrag auf dem Mac. Läuft für die Sitzung nichts, baut die Eingabe keine Verbindung auf. Fehler der Wiedergabe stehen in `wiedergabe.log` im selben Ordner. Der Mac
+Reihe. Ein Stoppwort beendet die Wiedergabe der eigenen Sitzung hier sofort und stoppt den
+Auftrag auf dem Mac. Läuft für die Sitzung nichts, baut es keine Verbindung auf. Fehler der Wiedergabe stehen in `wiedergabe.log` im selben Ordner. Der Mac
 muss wach und erreichbar sein; ist er es nicht, bleibt es still, und die Sitzung läuft weiter.
 
 ## Ton auf dem Gerät, an dem du gerade arbeitest
@@ -187,7 +195,7 @@ verzögert die Antwort um höchstens sechs Sekunden.
 Auf dem gewählten Gerät spielt `paplay`, unter macOS `ffmpeg` aus Homebrew über AudioToolbox
 (sonst `ffplay`), aufgerufen über ssh; ein Repo-Klon ist dort nicht nötig. Fällt die Wahl auf
 `hier` und rechnet dieses Gerät selbst, spielt der Dienst wie ohne Gerätewahl. Die Wahl steht
-mit den gemessenen Zeiten in `wiedergabe.log` (Ordner wie oben). Die Eingabe der eigenen
+mit den gemessenen Zeiten in `wiedergabe.log` (Ordner wie oben). Ein Stoppwort der eigenen
 Sitzung bricht die Wiedergabe auch auf dem anderen Gerät ab; was der Player dort schon
 gepuffert hat, klingt noch aus, bei `ffmpeg` unter macOS rund drei Sekunden, bei `ffplay` rund
 fünf (gemessen am 27.11.2026).
@@ -215,7 +223,8 @@ Ablageordner sorgt dafür, dass der Aufruf mit Ausnahme nirgendwo sonst schreibt
 | Kein Ton, `./sprechen.sh --status` meldet `"zustand": "aus"` | Hooks fehlen oder greifen nicht | Hook-Einträge prüfen; Protokoll `~/Library/Logs/hoerbuch-generator/sprechdienst.log` |
 | `Modell nicht ladbar: … No Metal device available` | Der Dienst wurde aus einer Sandbox gestartet | `./sprechen.sh --beenden` im Terminal; den nächsten Start übernimmt der Hook |
 | Kein Ton, obwohl der Dienst läuft | Die Antwort trägt keine Sprechmarke | `/sprechen` erneut aufrufen |
-| Ausgabe bricht mitten im Satz ab | Neue Eingabe oder Bericht eines Hintergrund-Agenten in derselben Sitzung | gewollt bei neuer Eingabe; bei Agenten-Berichten nicht abschaltbar |
+| Ausgabe bricht mitten im Satz ab | Stoppwort, oder `SPRECHEN_UNTERBRECHEN=1` und eine neue Eingabe oder der Bericht eines Hintergrund-Agenten in derselben Sitzung | gewollt beim Stoppwort; sonst `SPRECHEN_UNTERBRECHEN` entfernen |
+| Die Stimme hängt dem Text hinterher | Mehrere Eingaben kurz hintereinander, die Antworten stehen in der Reihe | „Psst“ leert die Reihe der Sitzung |
 | Die Sprechmarke steht sichtbar im Fenster | Die Oberfläche blendet HTML-Kommentare nicht aus | nur Darstellung |
 | Fernbetrieb: kein Ton | Mac nicht erreichbar, ssh fragt nach einem Passwort, oder kein Player gefunden | `wiedergabe.log` lesen; `echo "Das ist ein Satz vom Mac." \| ssh <MAC> '<REPO>/sprechen.sh --liefern -' \| <Player>` von Hand |
 | Gerätewahl: Ton auf dem falschen Gerät oder keiner | Leerlaufzeiten anders als gedacht, Gerät antwortet nicht, oder alle über `SPRECHEN_LEERLAUF` | Zeile `Gerätewahl:` in `wiedergabe.log` lesen |

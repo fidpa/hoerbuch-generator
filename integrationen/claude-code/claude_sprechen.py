@@ -10,7 +10,7 @@ siehe sprechen.md daneben) als HTML-Kommentar ans Ende der Antwort:
 
 Usage (als Hook, Eingabe ist das Hook-JSON auf stdin; Einrichtung: README.md daneben):
     .venv/bin/python integrationen/claude-code/claude_sprechen.py stop     Marke sprechen
-    .venv/bin/python integrationen/claude-code/claude_sprechen.py prompt   Ausgabe abbrechen
+    .venv/bin/python integrationen/claude-code/claude_sprechen.py prompt   Stoppwort erkennen
     .venv/bin/python integrationen/claude-code/claude_sprechen.py start    Modus von Anfang an
 
 start ist für einen SessionStart-Hook: Es gibt die Regeln aus sprechen.md als Kontext aus,
@@ -22,11 +22,16 @@ Einstellungen über Umgebungsvariablen:
     SPRECHEN_LAUTER  Anhebung in dB, 0 bis 15 (Standard: 8). Die Stimmen liegen bei rund
                      -21 LUFS; 8 dB mit Limiter bringen sie auf rund -14 LUFS, so laut wie
                      Musik bei Streamingdiensten, damit sie daneben hörbar bleiben.
+    SPRECHEN_UNTERBRECHEN  1: jede neue Eingabe bricht die laufende Ausgabe ab (bis v0.6.1
+                     das Verhalten ohne Einstellung)
 
-Mehrere Sitzungen: Stop- und Prompt-Hook geben die session_id als --quelle mit, eine Eingabe bricht
-also nur die Ausgabe der eigenen Sitzung ab. Dazu kommt „Aus <Projekt>.“ als --ansage; der
-Dienst spricht sie nur, wenn zuletzt eine andere Sitzung sprach. UserPromptSubmit feuert auch
-bei Berichten von Hintergrund-Agenten; die brechen die Ausgabe ihrer Sitzung ebenfalls ab.
+Abbrechen: Eine neue Eingabe lässt die laufende Antwort zu Ende sprechen, die nächste reiht
+sich dahinter ein. Besteht eine Eingabe nur aus einem Stoppwort (STOPPWORTE, etwa „Psst“),
+endet die Ausgabe der Sitzung, und Claude bekommt die Eingabe nicht (decision block).
+
+Mehrere Sitzungen: Stop- und Prompt-Hook geben die session_id als --quelle mit, ein Stopp
+trifft also nur die Ausgabe der eigenen Sitzung. Dazu kommt „Aus <Projekt>.“ als --ansage;
+der Dienst spricht sie nur, wenn zuletzt eine andere Sitzung sprach.
 
 Fernbetrieb, etwa auf Linux ohne MLX: Mit SPRECHEN_ENTFERNT=<ssh-ziel> rechnet der Mac
 dieses ssh-Ziels (sprechen.sh --liefern), und ein lokaler Player spielt den Ton hier ab:
@@ -37,8 +42,8 @@ dieses ssh-Ziels (sprechen.sh --liefern), und ein lokaler Player spielt den Ton 
                             über AudioToolbox), ffplay
 Der Stop-Hook übergibt die Wiedergabe einem eigenen Hintergrundprozess und kehrt sofort
 zurück. Eine Sperre unter XDG_RUNTIME_DIR (sonst ~/.cache) hält mehrere Sitzungen dieses
-Geräts in der Reihe; der Prompt-Hook beendet die Wiedergabe der eigenen Sitzung hier und
-stoppt den Auftrag auf dem Mac. Läuft für die Sitzung nichts, unterbleibt der ssh-Aufruf.
+Geräts in der Reihe; ein Stopp beendet die Wiedergabe der eigenen Sitzung hier und den
+Auftrag auf dem Mac. Läuft für die Sitzung nichts, unterbleibt der ssh-Aufruf.
 
 Ton auf dem Gerät, an dem gerade gearbeitet wird, etwa wenn Claude Code auf einem Server oder
 einem anderen Mac läuft und nur die Oberfläche hier ist (Terminal per ssh, T3 Code):
@@ -49,8 +54,8 @@ einem anderen Mac läuft und nur die Oberfläche hier ist (Terminal per ssh, T3 
     SPRECHEN_LEERLAUF  Sekunden; ist jedes Gerät länger unbenutzt, bleibt die Antwort stumm
                        (Standard: 1800). Dann wird woanders gearbeitet, etwa am Handy.
 Auf einem anderen Gerät spielt paplay, unter macOS ffmpeg über AudioToolbox, sonst ffplay,
-aufgerufen über ssh. Ohne SPRECHEN_ENTFERNT
-rechnet dieses Gerät selbst; fällt die Wahl auf "hier", spielt der Dienst wie gewohnt.
+aufgerufen über ssh. Ohne SPRECHEN_ENTFERNT rechnet dieses Gerät selbst; fällt die Wahl auf
+"hier", spielt der Dienst wie gewohnt.
 
 Hooks laufen außerhalb einer Bash-Sandbox; nur dort stehen Metal und Audio zur Verfügung.
 Fehler gehen nach stderr und brechen die Sitzung nie ab (Exit 0). Nur Standardbibliothek.
@@ -92,6 +97,10 @@ TIMEOUT = 30  # Sekunden; sprechen.sh kehrt nach dem Annehmen des Auftrags zurü
 # Fernbetrieb: Der Prompt-Hook hat 10 s; ssh darf ihn nicht aufbrauchen, wenn der Mac schläft
 SSH_OPTIONEN = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4"]
 STOPP_TIMEOUT = 8
+# Eine Eingabe, die nur aus einem dieser Wörter besteht, beendet die Ausgabe der Sitzung.
+# „Stopp“ fehlt mit Absicht: Damit hält man oft Claude selbst an, etwa in T3 Code während
+# einer laufenden Antwort, und das Wort soll dann bei Claude ankommen
+STOPPWORTE = {"psst", "pst", "still", "ruhe"}
 # Format von sprechen.sh --liefern
 PLAYER = [
     ["paplay", "--raw", "--rate=24000", "--channels=1", "--format=s16le"],
@@ -360,6 +369,34 @@ def _gehoert_uns(pid: int) -> bool:
     return b"claude_sprechen" in aus.stdout
 
 
+def ist_stoppwort(prompt: str) -> bool:
+    """Eingabe, die nur aus einem Stoppwort besteht; Groß- und Kleinschreibung und
+    Satzzeichen zählen nicht, damit es auch per Diktat klappt („Psst.“). Ein Buchstabe, der
+    drei- oder mehrmals steht, zählt doppelt: Die Spracherkennung schreibt auch „Pssst!“."""
+    wort = re.sub(r"\W+", "", prompt.casefold())
+    return re.sub(r"(.)\1{2,}", r"\1\1", wort) in STOPPWORTE
+
+
+def ausgabe_stoppen(sitzung: str, quelle: list[str], entfernt: str) -> None:
+    if not entfernt:
+        # Mit Gerätewahl läuft die Wiedergabe womöglich als Hintergrundprozess; ohne Marke
+        # kostet das nur einen Blick in den Ordner
+        wiedergabe_stoppen(sitzung)
+        aufrufen(["--stopp", *quelle])
+        return
+    # Erst hier verstummen, das geht sofort; dann den Auftrag auf dem Mac abbrechen. Ohne
+    # Marke läuft für diese Sitzung nichts, auch dort nicht: Der Hintergrundprozess lebt, bis
+    # ssh endet. ssh bei jedem Stopp kostete sonst den Aufbau, bei schlafendem Mac bis zum
+    # ConnectTimeout
+    if not wiedergabe_stoppen(sitzung):
+        return
+    try:
+        subprocess.run(entfernter_befehl(entfernt, ["--stopp", *quelle]),
+                       capture_output=True, timeout=STOPP_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.error("Stopp auf %s gescheitert: %s", entfernt, e)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Claude-Code-Hooks für den Sprechdienst")
     # abspielen ist intern: der Hintergrundprozess des Fernbetriebs
@@ -407,23 +444,15 @@ def main() -> int:
     entfernt = os.environ.get("SPRECHEN_ENTFERNT", "")
 
     if args.ereignis == "prompt":
-        if not entfernt:
-            # Mit Gerätewahl läuft die Wiedergabe womöglich als Hintergrundprozess; ohne Marke
-            # kostet das nur einen Blick in den Ordner
-            wiedergabe_stoppen(sitzung)
-            aufrufen(["--stopp", *quelle])
-            return 0
-        # Erst hier verstummen, das geht sofort; dann den Auftrag auf dem Mac abbrechen.
-        # Ohne Marke läuft für diese Sitzung nichts, auch dort nicht: Der Hintergrundprozess
-        # lebt, bis ssh endet. ssh bei jeder Eingabe kostete sonst jedes Mal den Aufbau,
-        # bei schlafendem Mac bis zum ConnectTimeout
-        if not wiedergabe_stoppen(sitzung):
-            return 0
-        try:
-            subprocess.run(entfernter_befehl(entfernt, ["--stopp", *quelle]),
-                           capture_output=True, timeout=STOPP_TIMEOUT)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            log.error("Stopp auf %s gescheitert: %s", entfernt, e)
+        # Eine neue Eingabe lässt die laufende Antwort zu Ende sprechen; die nächste reiht sich
+        # dahinter ein. Nur ein Stoppwort oder SPRECHEN_UNTERBRECHEN=1 bricht ab
+        stoppwort = ist_stoppwort(str(eingabe.get("prompt", "")))
+        if stoppwort or os.environ.get("SPRECHEN_UNTERBRECHEN") == "1":
+            ausgabe_stoppen(sitzung, quelle, entfernt)
+        if stoppwort:
+            # Claude bekommt das Stoppwort nicht; der Grund steht nur für den Nutzer da
+            print(json.dumps({"decision": "block", "reason": "Gesprächsmodus: Ausgabe gestoppt."},
+                             ensure_ascii=False))
         return 0
 
     text = gesprochener_text(str(eingabe.get("last_assistant_message", "")))
