@@ -12,6 +12,7 @@ Usage:
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,15 +65,16 @@ class Hook(unittest.TestCase):
             encoding="utf-8")
 
     def tearDown(self):
-        for datei in self.tmp.iterdir():
-            datei.unlink()
-        self.tmp.rmdir()
+        shutil.rmtree(self.tmp)
+
+    def _env(self, env: dict | None = None) -> dict:
+        # XDG_RUNTIME_DIR im Testordner: Die Modus-Dateien echter Sitzungen bleiben unberührt
+        return {"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin",
+                "XDG_RUNTIME_DIR": str(self.tmp / "run"), **(env or {})}
 
     def _lauf(self, ereignis: str, eingabe: dict, env: dict | None = None) -> tuple[int, str]:
         lauf = subprocess.run([sys.executable, str(SKRIPT), ereignis], input=json.dumps(eingabe),
-                              text=True, capture_output=True,
-                              env={"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin",
-                                   **(env or {})})
+                              text=True, capture_output=True, env=self._env(env))
         aufruf = self.protokoll.read_text(encoding="utf-8") if self.protokoll.exists() else ""
         return lauf.returncode, aufruf
 
@@ -115,9 +117,7 @@ class Hook(unittest.TestCase):
     def _prompt(self, text: str, env: dict | None = None) -> tuple[str, str]:
         lauf = subprocess.run([sys.executable, str(SKRIPT), "prompt"],
                               input=json.dumps({"prompt": text, "session_id": "abc"}),
-                              text=True, capture_output=True,
-                              env={"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin",
-                                   **(env or {})})
+                              text=True, capture_output=True, env=self._env(env))
         self.assertEqual(lauf.returncode, 0)
         aufruf = self.protokoll.read_text(encoding="utf-8") if self.protokoll.exists() else ""
         return aufruf, lauf.stdout
@@ -212,7 +212,7 @@ class Hook(unittest.TestCase):
     def test_der_letzte_aufruf_zaehlt(self):
         self.assertNotEqual(self._hinweis(START, self._command("aus"), self._command()), "")
         self.protokoll.unlink(missing_ok=True)
-        # Nach dem Kompaktieren setzt der SessionStart-Hook den Modus wieder an
+        # Ohne Modus-Datei, etwa in einem Fork, setzt der SessionStart-Hook den Modus wieder an
         self.assertNotEqual(self._hinweis(self._command("aus"), START), "")
 
     def test_ohne_gespraechsmodus_stumm(self):
@@ -234,6 +234,96 @@ class Hook(unittest.TestCase):
                         {"notification_type": "permission_prompt"}, {}):
             rc, aufruf = self._lauf("notification", eingabe)
             self.assertEqual((rc, aufruf), (0, ""), eingabe)
+
+    # --- Modus je Sitzung in einer Datei ------------------------------------------------
+
+    def _modus(self) -> str | None:
+        ordner = self.tmp / "run" / "hoerbuch-generator" / "modus"
+        dateien = list(ordner.iterdir()) if ordner.exists() else []
+        return dateien[0].read_text(encoding="utf-8").strip() if len(dateien) == 1 else None
+
+    def _start(self) -> str:
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "start"],
+                              input=json.dumps({"session_id": "abc", "source": "compact"}),
+                              text=True, capture_output=True, env=self._env())
+        self.assertEqual(lauf.returncode, 0)
+        return lauf.stdout
+
+    def test_sprechen_haelt_den_modus_fest(self):
+        for eingabe, erwartet in (("/sprechen aus", "aus"), ("/sprechen datei", "datei"),
+                                  ("  /sprechen  Aus.", "aus"), ("/sprechen", "an"),
+                                  ("/sprechen bitte", "an")):
+            self.assertEqual(self._prompt(eingabe), ("", ""), eingabe)
+            self.assertEqual(self._modus(), erwartet, eingabe)
+
+    def test_andere_eingaben_halten_nichts_fest(self):
+        for eingabe in ("Weiter", "/sprechenx aus", "bitte /sprechen aus", "Psst"):
+            self.protokoll.unlink(missing_ok=True)
+            self._prompt(eingabe)
+            self.assertIsNone(self._modus(), eingabe)
+
+    def test_aus_uebersteht_das_kompaktieren(self):
+        self._prompt("/sprechen aus")
+        self.assertEqual(self._start(), "")
+        rc, aufruf = self._lauf("stop", {"session_id": "abc",
+                                         "last_assistant_message": "<!-- sprechen: Hallo. -->"})
+        self.assertEqual((rc, aufruf), (0, ""))
+        # Eine andere Sitzung spricht weiter
+        rc, aufruf = self._lauf("stop", {"session_id": "xyz",
+                                         "last_assistant_message": "<!-- sprechen: Hallo. -->"})
+        self.assertTrue(aufruf.endswith("Hallo."), aufruf)
+
+    def test_datei_uebersteht_das_kompaktieren(self):
+        self._prompt("/sprechen datei")
+        kontext = json.loads(self._start())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("steht auf Datei", kontext)
+        self.assertIn("--datei", kontext)
+        self.assertNotIn("von Anfang an eingeschaltet", kontext)
+        self.assertNotIn("Bestätige", kontext)
+        # Der Abschnitt verweist auf „Knapp“ und „Natürlich“; ohne sie fehlten die Regeln für
+        # die gesprochene Fassung. Die Sprechmarke gehört nicht dazu
+        self.assertIn("### Knapp", kontext)
+        self.assertIn("### Natürlich", kontext)
+        self.assertNotIn("<!-- sprechen:", kontext)
+        self.assertNotIn("### Was sonst gilt", kontext)
+        rc, aufruf = self._lauf("stop", {"session_id": "abc",
+                                         "last_assistant_message": "<!-- sprechen: Hallo. -->"})
+        self.assertEqual((rc, aufruf), (0, ""))
+
+    def test_wieder_an_nach_aus(self):
+        self._prompt("/sprechen aus")
+        self._prompt("/sprechen")
+        self.assertIn("von Anfang an eingeschaltet", self._start())
+
+    def test_datei_geht_vor_dem_transkript(self):
+        self._prompt("/sprechen aus")
+        self.assertEqual(self._hinweis(START), "")
+        self._prompt("/sprechen")
+        self.assertTrue(self._hinweis(self._command("aus")).endswith("Freigabe."))
+
+    def test_ohne_sitzung_und_ohne_schreibrecht_kein_abbruch(self):
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "prompt"],
+                              input=json.dumps({"prompt": "/sprechen aus"}),
+                              text=True, capture_output=True, env=self._env())
+        self.assertEqual((lauf.returncode, lauf.stdout), (0, ""))
+        self.assertIsNone(self._modus())
+        (self.tmp / "datei").write_text("", encoding="utf-8")
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "prompt"],
+                              input=json.dumps({"prompt": "/sprechen aus", "session_id": "abc"}),
+                              text=True, capture_output=True,
+                              env=self._env({"XDG_RUNTIME_DIR": str(self.tmp / "datei")}))
+        self.assertEqual((lauf.returncode, lauf.stdout), (0, ""))
+        self.assertIn("Modus nicht festgehalten", lauf.stderr)
+
+    def test_alte_modus_dateien_werden_geraeumt(self):
+        ordner = self.tmp / "run" / "hoerbuch-generator" / "modus"
+        ordner.mkdir(parents=True)
+        alt = ordner / "0123456789abcdef"
+        alt.write_text("aus\n", encoding="utf-8")
+        os.utime(alt, (0, 0))
+        self._prompt("/sprechen datei")
+        self.assertFalse(alt.exists())
+        self.assertEqual(self._modus(), "datei")
 
     def test_fehlender_generator_bricht_nicht_ab(self):
         lauf = subprocess.run([sys.executable, str(SKRIPT), "stop"],
@@ -428,9 +518,11 @@ class Sitzungsbeginn(unittest.TestCase):
     """start: Der SessionStart-Hook gibt die Regeln aus sprechen.md als Kontext aus."""
 
     def test_regeln_als_kontext_ohne_bestaetigung(self):
-        lauf = subprocess.run([sys.executable, str(SKRIPT), "start"],
-                              input=json.dumps({"session_id": "abc", "source": "startup"}),
-                              text=True, capture_output=True, timeout=20)
+        with tempfile.TemporaryDirectory() as ordner:
+            lauf = subprocess.run([sys.executable, str(SKRIPT), "start"],
+                                  input=json.dumps({"session_id": "abc", "source": "startup"}),
+                                  text=True, capture_output=True, timeout=20,
+                                  env={**os.environ, "XDG_RUNTIME_DIR": ordner})
         self.assertEqual(lauf.returncode, 0)
         ausgabe = json.loads(lauf.stdout)["hookSpecificOutput"]
         self.assertEqual(ausgabe["hookEventName"], "SessionStart")

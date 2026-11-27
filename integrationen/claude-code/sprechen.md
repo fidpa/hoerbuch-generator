@@ -89,6 +89,12 @@ Schreibtisch nebenan es sagen würde.
   („zwei Komma sechs Sekunden“, „am sechsundzwanzigsten November“), Abkürzungen auflösen („zum
   Beispiel“ statt „z. B.“), keine Zeichen wie %, €, →, / oder &. Englische Fachbegriffe dürfen
   bleiben, Bezeichner aus dem Code nicht.
+- **Nach Gehör schreiben, wo die Stimme deutsch liest:** Ein englisches Wort, das wie ein
+  deutsches geschrieben wird, spricht sie deutsch aus. „Tag“ klingt wie die Tageszeit, deshalb
+  in der Marke „Täg“ („Jetzt kannst du den Täg pushen.“). Ebenso Namen, die sie deutsch liest:
+  „Mätter-Most“ statt „Mattermost“.
+  Wer die Bedeutung kennt, ist Claude; ein Wörterbuch im Dienst könnte „Tag“ und „Täg“ nicht
+  unterscheiden.
 
 ### Was sonst gilt
 

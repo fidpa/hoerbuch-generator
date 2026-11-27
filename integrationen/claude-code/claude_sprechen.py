@@ -16,7 +16,9 @@ Usage (als Hook, Eingabe ist das Hook-JSON auf stdin; Einrichtung: README.md dan
     .venv/bin/python integrationen/claude-code/claude_sprechen.py pruefen  Einrichtung prüfen
 
 start ist für einen SessionStart-Hook: Es gibt die Regeln aus sprechen.md als Kontext aus,
-jede Sitzung beginnt dann im Gesprächsmodus, bis /sprechen aus ihn abschaltet.
+jede Sitzung beginnt dann im Gesprächsmodus, bis /sprechen aus ihn abschaltet. Den Modus, den
+/sprechen setzt, hält der Prompt-Hook je Sitzung in einer Datei unter XDG_RUNTIME_DIR (sonst
+~/.cache) fest; start, stop und notification lesen sie, so übersteht er das Kompaktieren.
 notification ist für einen Notification-Hook: Wartet Claude auf eine Freigabe oder eine Eingabe,
 spricht es einen festen Satz, wenn der Gesprächsmodus der Sitzung an ist. pruefen ist kein Hook,
 sondern ein Befehl für das Terminal: Er liest die Hook-Einträge aus ~/.claude/settings.json und
@@ -101,6 +103,19 @@ START_KENNUNG = "Der Gesprächsmodus ist in dieser Sitzung von Anfang an eingesc
 VORSPANN = (START_KENNUNG + " (SessionStart-Hook des Hörbuch-Generators), ohne Bestätigung. "
             "/sprechen aus schaltet ihn ab, /sprechen datei auf Audiodateien um. "
             "Bis dahin gilt:\n\n")
+# Nach dem Kompaktieren im Datei-Modus: der Abschnitt „Bei datei“ statt der Regeln für Ton.
+# Ohne START_KENNUNG, sonst läse modus() den Kontext im Transkript als „an“
+DATEI_ABSCHNITT = "## Bei `datei`"
+DATEI_BESTAETIGEN = "Bestätige mit genau dieser Antwort"
+# Der Abschnitt verweist auf die Regeln „Knapp“ und „Natürlich“ weiter unten; die kommen mit
+KNAPP = "### Knapp"
+WAS_SONST = "### Was sonst gilt"
+VORSPANN_DATEI = ("Der Gesprächsmodus dieser Sitzung steht auf Datei (/sprechen datei, vom "
+                  "Hook des Hörbuch-Generators festgehalten), ohne Bestätigung. /sprechen "
+                  "schaltet auf Ton, /sprechen aus ab. Bis dahin gilt:\n\n")
+# Der Prompt-Hook bekommt die Eingabe so, wie sie getippt wurde (Hook-Doku, UserPromptSubmit)
+SPRECHEN_EINGABE = re.compile(r"\s*/sprechen(?:\s+(.*))?\Z", re.DOTALL)
+MODUS_HALTEN = 30 * 24 * 3600  # Sekunden; ältere Modus-Dateien räumt das nächste Schreiben weg
 # Notification: ein fester Satz je Typ. idle_prompt fehlt mit Absicht: Er kommt rund 60 s nach
 # jeder Antwort, die der Stop-Hook gerade gesprochen hat
 HINWEISE = {
@@ -197,14 +212,61 @@ def gesprochener_text(antwort: str) -> str:
     return " ".join(treffer[-1].split()) if treffer else ""
 
 
-def regeln() -> str:
-    """Regeln des Gesprächsmodus aus sprechen.md; leer, wenn die Abschnitte fehlen."""
+def regeln(von: str = EINSCHALTEN, bis: str = BESTAETIGEN) -> str:
+    """Abschnitt aus sprechen.md von der Überschrift bis vor die Bestätigung, ohne beide;
+    leer, wenn eine fehlt. Ohne Argumente die Regeln für Ton."""
     text = COMMAND.read_text(encoding="utf-8")
-    anfang = text.find(EINSCHALTEN)
-    ende = text.find(BESTAETIGEN, anfang)
+    anfang = text.find(von)
+    ende = text.find(bis, anfang)
     if anfang < 0 or ende < 0:
         return ""
-    return text[anfang + len(EINSCHALTEN):ende].strip()
+    return text[anfang + len(von):ende].strip()
+
+
+def _modus_wort(argumente: str) -> str:
+    """Modus aus den Argumenten von /sprechen: "aus", "datei", sonst "an". Satzzeichen am
+    ersten Wort zählen nicht: „/sprechen aus.“ schaltet auch aus."""
+    worte = argumente.split()
+    erstes = re.sub(r"\W+", "", worte[0].casefold()) if worte else ""
+    return erstes if erstes in ("aus", "datei") else "an"
+
+
+def modus_aus_eingabe(prompt: str) -> str | None:
+    """Modus, den eine Eingabe /sprechen [aus | datei] setzt; None bei jeder anderen Eingabe."""
+    treffer = SPRECHEN_EINGABE.match(prompt or "")
+    return _modus_wort(treffer.group(1) or "") if treffer else None
+
+
+def _modus_pfad(sitzung: str) -> Path:
+    return zustand_ordner() / "modus" / _kennung(sitzung)
+
+
+def modus_schreiben(sitzung: str, wert: str) -> None:
+    """Hält den Modus der Sitzung in einer Datei fest; das Kompaktieren behält die
+    session_id, der SessionStart-Hook findet ihn danach wieder."""
+    ziel = _modus_pfad(sitzung)
+    ziel.parent.mkdir(parents=True, exist_ok=True)
+    grenze = time.time() - MODUS_HALTEN
+    for alt in ziel.parent.iterdir():
+        try:
+            if alt.stat().st_mtime < grenze:
+                alt.unlink()
+        except OSError:
+            pass  # eine zweite Sitzung räumt gerade dieselbe Datei weg
+    neu = ziel.with_name(f"{ziel.name}.{os.getpid()}")
+    neu.write_text(wert + "\n", encoding="utf-8")
+    os.replace(neu, ziel)
+
+
+def modus_lesen(sitzung: str) -> str | None:
+    """Festgehaltener Modus der Sitzung: "an", "aus", "datei" oder None ohne Datei."""
+    if not sitzung:
+        return None
+    try:
+        wert = _modus_pfad(sitzung).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return wert if wert in ("an", "aus", "datei") else None
 
 
 def modus(transcript: str) -> str | None:
@@ -230,10 +292,8 @@ def modus(transcript: str) -> str | None:
             if (eintrag.get("type") == "user" and isinstance(inhalt, str)
                     and SPRECHEN_COMMAND in inhalt):
                 treffer = COMMAND_ARGS.search(inhalt)
-                worte = treffer.group(1).split() if treffer else []
-                # Satzzeichen zählen nicht: „/sprechen aus.“ schaltet auch aus
-                erstes = re.sub(r"\W+", "", worte[0].casefold()) if worte else ""
-                zustand = "aus" if erstes in ("aus", "datei") else "an"
+                zustand = "an" if _modus_wort(treffer.group(1) if treffer else "") == "an" \
+                    else "aus"
             elif (isinstance(anhang, dict) and anhang.get("type") == "hook_additional_context"
                   and START_KENNUNG in str(anhang.get("content"))):
                 zustand = "an"
@@ -555,14 +615,20 @@ def hinweis(eingabe: dict) -> str:
     """Satz für einen Notification-Hook; leer, wenn der Typ keinen hat oder der
     Gesprächsmodus der Sitzung nicht erkennbar an ist."""
     satz = HINWEISE.get(str(eingabe.get("notification_type") or ""), "")
+    if not satz:
+        return ""
+    # Zuerst die Datei des Prompt-Hooks, sonst das Transkript (etwa eine Sitzung, die vor dem
+    # Update begann, oder eine Oberfläche, die /sprechen anders an den Hook gibt)
+    zustand = modus_lesen(str(eingabe.get("session_id") or ""))
     transcript = str(eingabe.get("transcript_path") or "")
-    if not satz or not transcript:
+    if zustand is None and not transcript:
         return ""
-    try:
-        zustand = modus(transcript)
-    except (OSError, ValueError) as e:  # ValueError: Nullbyte im Pfad
-        log.error("Transkript nicht lesbar: %s", e)
-        return ""
+    if zustand is None:
+        try:
+            zustand = modus(transcript)
+        except (OSError, ValueError) as e:  # ValueError: Nullbyte im Pfad
+            log.error("Transkript nicht lesbar: %s", e)
+            return ""
     if zustand != "an":
         log.info("Hinweis %s ohne Ton: Gesprächsmodus %s", eingabe.get("notification_type"),
                  zustand or "nicht erkennbar")
@@ -810,17 +876,31 @@ def main() -> int:
     if os.environ.get("SPRECHEN_AUS") == "1" and args.ereignis != "abspielen":
         return 0
 
+    # Hooks gelten meist global. Ohne Sitzungskennung bräche eine Eingabe in einer zweiten
+    # Sitzung die Antwort der ersten ab
+    sitzung = str(eingabe.get("session_id") or "")
+
     if args.ereignis == "start":
+        # Nach dem Kompaktieren gilt der Modus, den /sprechen in dieser Sitzung gesetzt hat;
+        # nach /clear beginnt eine neue Sitzung und mit ihr der Ton
+        gesetzt = modus_lesen(sitzung)
+        if gesetzt == "aus":
+            return 0
         try:
-            teil = regeln()
+            if gesetzt == "datei":
+                datei, stil = regeln(DATEI_ABSCHNITT, DATEI_BESTAETIGEN), regeln(KNAPP, WAS_SONST)
+                teil = f"{datei}\n\n{KNAPP}\n\n{stil}" if datei and stil else ""
+            else:
+                teil = regeln()
         except OSError as e:
             log.error("sprechen.md nicht lesbar: %s", e)
             return 0
         if not teil:
             log.error("Regeln in %s nicht gefunden", COMMAND)
             return 0
+        vorspann = VORSPANN_DATEI if gesetzt == "datei" else VORSPANN
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
-                                                 "additionalContext": VORSPANN + teil}},
+                                                 "additionalContext": vorspann + teil}},
                          ensure_ascii=False))
         return 0
 
@@ -831,16 +911,20 @@ def main() -> int:
             log.error("Wiedergabe gescheitert: %s", e)
             return 1
 
-    # Hooks gelten meist global. Ohne Sitzungskennung bräche eine Eingabe in einer zweiten
-    # Sitzung die Antwort der ersten ab
-    sitzung = str(eingabe.get("session_id") or "")
     quelle = ["--quelle", sitzung] if sitzung else []
     entfernt = os.environ.get("SPRECHEN_ENTFERNT", "")
 
     if args.ereignis == "prompt":
+        prompt = str(eingabe.get("prompt", ""))
+        neu = modus_aus_eingabe(prompt)
+        if neu and sitzung:
+            try:
+                modus_schreiben(sitzung, neu)
+            except OSError as e:
+                log.error("Modus nicht festgehalten: %s", e)
         # Eine neue Eingabe lässt die laufende Antwort zu Ende sprechen; die nächste reiht sich
         # dahinter ein. Nur ein Stoppwort oder SPRECHEN_UNTERBRECHEN=1 bricht ab
-        stoppwort = ist_stoppwort(str(eingabe.get("prompt", "")))
+        stoppwort = ist_stoppwort(prompt)
         if stoppwort or os.environ.get("SPRECHEN_UNTERBRECHEN") == "1":
             ausgabe_stoppen(sitzung, quelle, entfernt)
         if stoppwort:
@@ -851,6 +935,9 @@ def main() -> int:
 
     if args.ereignis == "notification":
         text = hinweis(eingabe)
+    elif modus_lesen(sitzung) in ("aus", "datei"):
+        # Eine Marke trotz /sprechen aus, etwa zitiert; im Datei-Modus käme sie doppelt
+        text = ""
     else:
         text = gesprochener_text(str(eingabe.get("last_assistant_message", "")))
     if text:

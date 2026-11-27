@@ -58,9 +58,18 @@ Der erste Aufruf lädt das Modell und braucht deshalb länger.
 
 Er gibt den Abschnitt „Modus einschalten“ aus `sprechen.md` als Kontext aus, rund 1 000 Tokens
 je Sitzung. SessionStart feuert auch beim Fortsetzen einer Sitzung (`--resume`, `--continue`),
-nach `/clear` und nach dem Kompaktieren; ein vorher abgeschalteter Modus ist danach wieder an.
-Es spricht dann jede Sitzung, auch Sitzungen, die im Hintergrund arbeiten; der Hook erkennt sie
-nicht. Startet ein Dienst Claude ohne Nutzer und lädt dabei die Einstellungen des Nutzers (ein Bot
+nach `/clear` und nach dem Kompaktieren. Ohne Aufruf von `/sprechen` spricht deshalb jede
+Sitzung, auch Sitzungen, die im Hintergrund arbeiten; der Hook erkennt sie nicht.
+
+Den Modus, den `/sprechen` setzt, hält der UserPromptSubmit-Hook je Sitzung in einer Datei fest
+(`hoerbuch-generator/modus/` unter `XDG_RUNTIME_DIR`, sonst `~/.cache`; Dateien älter als 30 Tage
+räumt das nächste Schreiben weg). Beim Kompaktieren und beim Fortsetzen bleibt die
+Sitzungskennung gleich, und der SessionStart-Hook gibt den gesetzten Modus aus: nach
+`/sprechen aus` keinen Kontext, nach `/sprechen datei` den Abschnitt „Bei datei“ samt den Regeln
+„Knapp“ und „Natürlich“. Nach `/clear` und in einem Fork (`--fork-session`, `/branch`) beginnt
+eine neue Sitzung, dann ist der Ton wieder an.
+
+Startet ein Dienst Claude ohne Nutzer und lädt dabei die Einstellungen des Nutzers (ein Bot
 über das Agent SDK mit `settingSources: ["user", …]`, ein zeitgesteuertes `claude -p` ohne
 `--setting-sources`), setzt er `SPRECHEN_AUS=1`. Dann tun alle Hooks dieses Skripts nichts, etwa
 in einer systemd-Unit mit `Environment=SPRECHEN_AUS=1`. Claude Code reicht seine Umgebung an die
@@ -83,10 +92,11 @@ Im Fernbetrieb und mit Gerätewahl (unten) stehen dieselben Variablen davor wie 
 Claude Code löst ihn aus, wenn eine Freigabe rund sechs Sekunden wartet; im Terminal schiebt jede
 Taste die Frist auf, in Oberflächen auf Basis des Agent SDK nicht
 ([Hook-Doku](https://code.claude.com/docs/en/hooks.md#notification)). Der Hook spricht nur, wenn
-die Sitzung im Gesprächsmodus ist. Das liest er aus ihrem Transkript: Es zählt der letzte Aufruf
-von `/sprechen` oder der Kontext des SessionStart-Hooks. Nach `/sprechen aus` und `/sprechen
-datei` bleibt er still. Grenzen: Das Format des Transkripts ist nicht dokumentiert, und ändert es
-sich, bleibt die Ansage stumm. Den Hinweis nach 60 Sekunden ohne Eingabe (`idle_prompt`) spricht
+die Sitzung im Gesprächsmodus ist. Das liest er aus der Datei des UserPromptSubmit-Hooks (oben),
+und nur ohne sie aus dem Transkript: Dort zählt der letzte Aufruf von `/sprechen` oder der Kontext
+des SessionStart-Hooks. Nach `/sprechen aus` und `/sprechen datei` bleibt er still. Grenze des
+Rückwegs: Das Format des Transkripts ist nicht dokumentiert, und ändert es sich, bleibt die Ansage
+ohne Datei stumm. Den Hinweis nach 60 Sekunden ohne Eingabe (`idle_prompt`) spricht
 der Hook nicht, er folgte sonst auf jede gesprochene Antwort. Eine Rückfrage von Claude selbst
 (Werkzeug `AskUserQuestion`) kam in T3 Code als `permission_prompt` mit der Meldung „Claude needs
 your permission to use AskUserQuestion“, sechs Sekunden nach der Frage (gemessen am 27.11.2026);
@@ -239,8 +249,9 @@ eigener Zeile als Player, auf dem iPhone seit Version 2.2.0 (28.10.2026), gestar
 `/sprechen datei` schaltet dafür um: Claude ruft vor jeder Antwort `sprechen.sh --datei` auf,
 das die gesprochene Fassung als MP3 unter `~/Library/Caches/hoerbuch-generator/dateien/` ablegt
 und den Pfad ausgibt, und bettet die Datei am Ende der Antwort ein. Eine Sprechmarke gibt es in
-diesem Modus nicht, der Stop-Hook bleibt still. Dateien älter als sieben Tage löscht der nächste
-Aufruf; ältere Antworten zeigen dann keinen Player mehr.
+diesem Modus nicht, der Stop-Hook bleibt still, auch wenn doch eine Marke dasteht. Der Modus
+übersteht das Kompaktieren (Datei je Sitzung, oben unter „Einrichten“). MP3-Dateien älter als
+sieben Tage löscht der nächste Aufruf; ältere Antworten zeigen dann keinen Player mehr.
 
 Der Modus braucht den Sprechdienst auf dem Gerät, auf dem Claude Code läuft (Mac mit Apple
 Silicon). In einer Sandbox braucht `sprechen.sh` eine Ausnahme, weil Metal dort fehlt; der feste

@@ -6,6 +6,22 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.10.0] - 2026-11-27: Der gewählte Modus übersteht das Kompaktieren
+
+### Geändert
+
+- **Der Modus übersteht das Kompaktieren:** `/sprechen aus` und `/sprechen datei` standen nur im
+  Kontext der Sitzung. Nach dem Kompaktieren schaltete der SessionStart-Hook wieder auf Ton, und
+  am Handy kam die Datei ohne Hinweis nicht mehr. Jetzt hält der UserPromptSubmit-Hook den Modus
+  je Sitzung in einer Datei fest. Der SessionStart-Hook gibt danach nach `/sprechen aus` keinen
+  Kontext aus und nach `/sprechen datei` die Regeln für Dateien samt „Knapp“ und „Natürlich“.
+  Der Stop-Hook spricht in beiden Modi keine Marke, und der Notification-Hook liest den Modus aus
+  der Datei, das Transkript nur noch ohne sie. Nach `/clear` und in einem Fork beginnt eine neue
+  Sitzung, dann ist der Ton wieder an.
+- **`sprechen.md`, Regel „Nach Gehör schreiben“:** Ein englisches Wort, das die Stimme deutsch
+  liest, schreibt Claude in der Sprechmarke nach Gehör, etwa „Täg“ statt „Tag“ und „Mätter-Most“
+  statt „Mattermost“.
+
 ## [0.9.0] - 2026-11-27: Gesprächsmodus für Dienste ohne Nutzer abschaltbar
 
 ### Hinzugefügt
@@ -240,6 +256,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.10.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.10.0
 [0.9.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.9.0
 [0.8.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.8.0
 [0.7.1]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.7.1
