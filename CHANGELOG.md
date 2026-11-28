@@ -6,6 +6,22 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.16.0] - 2026-11-28: Leerlaufzeit des Sprechdienstes einstellbar
+
+### Hinzugefügt
+
+- **Leerlaufzeit des Sprechdienstes einstellbar:** `SPRECHDIENST_LEERLAUF` (Sekunden, mindestens
+  60) setzt, nach wie langer Zeit ohne Auftrag der Dienst endet; bisher fest 20 Minuten. Danach
+  lädt der nächste Auftrag das Modell neu, und der erste Ton kam im Protokoll eines Macs nach
+  rund 6 statt rund 2 Sekunden, bei etwa jeder vierzehnten Antwort (315 Antworten bis zum
+  28.11.2026). Der Dienst liest den Wert aus der Umgebung oder aus
+  `~/.config/hoerbuch-generator/sprechen.conf`, der Datei des Hook-Skripts, auch wenn ein anderes
+  Gerät ihn über ssh startet. Dieselbe Zeile ergibt dort denselben Wert wie im Hook-Skript: Die
+  letzte Zeile mit dem Namen gilt, `#` beginnt nur am Wortanfang einen Kommentar. Leer zählt wie
+  nicht gesetzt. Ein Wert unter 60, keine Zahl oder `inf` gilt nicht; das steht im Protokoll des
+  Dienstes, und es bleibt bei 20 Minuten. Das Hook-Skript nimmt die Zeile in der Datei an und
+  zeigt den Wert in `pruefen`, auch aus `env` in `settings.json`.
+
 ## [0.15.0] - 2026-11-28: Stummschalter für alle Sitzungen
 
 ### Hinzugefügt
@@ -378,6 +394,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.16.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.16.0
 [0.15.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.15.0
 [0.14.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.14.0
 [0.13.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.13.0

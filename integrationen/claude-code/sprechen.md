@@ -36,7 +36,8 @@ Keine Sprechmarke: Sonst spräche der Stop-Hook dieselbe Fassung zusätzlich auf
 Scheitert der Aufruf, die Antwort ohne Datei schreiben und den Fehler in einem Satz nennen.
 „Dienst nicht erreichbar“ heißt meist: Der Dienst lief nicht, und ein Start aus einer Sandbox
 scheitert, weil dort Metal fehlt. Dann nennen, dass ein Aufruf von `sprechen.sh` im Terminal oder
-eine Antwort mit `/sprechen` (Ton) ihn startet; danach hält er 20 Minuten.
+eine Antwort mit `/sprechen` (Ton) ihn startet; danach hält er 20 Minuten, sofern
+`SPRECHDIENST_LEERLAUF` nichts anderes setzt.
 
 Bestätige mit genau dieser Antwort, ohne Datei:
 

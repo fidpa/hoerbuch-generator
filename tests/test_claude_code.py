@@ -1619,13 +1619,13 @@ class Pruefen(unittest.TestCase):
     def test_hooks_lesen(self):
         import claude_sprechen
         umgebung, eingetragen, praefixe = claude_sprechen.hooks_lesen({
-            "env": {"SPRECHEN_LAUTER": 12, "ANDERES": "x"},
+            "env": {"SPRECHEN_LAUTER": 12, "SPRECHDIENST_LEERLAUF": 3600, "ANDERES": "x"},
             "hooks": {"Stop": self._hook("SPRECHEN_ENTFERNT_REPO='~/R/hg' "
                                          "python3 a/claude_sprechen.py stop"),
                       "Notification": [{"matcher": "permission_prompt", "hooks": [
                           {"type": "command", "command": "py claude_sprechen.py notification"}]}],
                       "PreToolUse": self._hook("andere.sh")}})
-        self.assertEqual(umgebung, {"SPRECHEN_LAUTER": "12"})
+        self.assertEqual(umgebung, {"SPRECHEN_LAUTER": "12", "SPRECHDIENST_LEERLAUF": "3600"})
         self.assertEqual(eingetragen, {"Stop": ["stop"], "Notification": ["notification"]})
         self.assertEqual(praefixe, {"Stop": {"SPRECHEN_ENTFERNT_REPO": "~/R/hg"},
                                     "Notification": {}})

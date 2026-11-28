@@ -13,7 +13,8 @@
 #   ./sprechen.sh --stopp [--quelle ID [--sonst-aktuell]] | --status | --beenden
 #
 # Der erste Aufruf startet einen Dienst, der das Modell geladen hält; nach 20 Minuten
-# ohne Auftrag beendet er sich. Für lange Texte und MP3: vorlesen.sh.
+# ohne Auftrag beendet er sich (SPRECHDIENST_LEERLAUF in Sekunden setzt eine andere Zeit).
+# Für lange Texte und MP3: vorlesen.sh.
 # Alle Optionen: ./sprechen.sh -h
 # Einmalig vorher: ./einrichten.sh
 

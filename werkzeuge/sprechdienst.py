@@ -15,7 +15,8 @@ Aufbau:
       (SPRECHDIENST_SOCKET, Vorgabe ~/Library/Caches/hoerbuch-generator/sprechdienst.sock).
       Der erste Aufruf startet ihn im Hintergrund; nach LEERLAUF Sekunden ohne Auftrag
       beendet er sich und gibt die rund 2 GB Speicher wieder frei. Als Auftrag zaehlt nur
-      sprich, nicht stopp oder status.
+      sprich, nicht stopp oder status. SPRECHDIENST_LEERLAUF in der Umgebung oder in der
+      Einstellungsdatei des Hook-Skripts setzt eine andere Zeit (leerlauf_vorgabe).
     - Der Aufruf kehrt zurueck, sobald der Auftrag angenommen ist (ausser mit --warten).
       Auftraege werden der Reihe nach gesprochen; --stopp bricht die laufende Ausgabe ab
       und verwirft die Warteschlange. Mit --quelle tragen Auftraege eine Kennung des
@@ -63,9 +64,11 @@ import fcntl
 import io
 import json
 import logging
+import math
 import os
 import queue
 import re
+import shlex
 import signal
 import socket
 import subprocess
@@ -84,6 +87,11 @@ DEFAULT_SOCKET = Path.home() / "Library" / "Caches" / "hoerbuch-generator" / "sp
 DEFAULT_LOG = Path.home() / "Library" / "Logs" / "hoerbuch-generator" / "sprechdienst.log"
 DEFAULT_TEMPO = 1.20  # wie vorlesen.sh: rund 150 Woerter pro Minute
 LEERLAUF = 20 * 60  # Sekunden ohne Auftrag, danach beendet sich der Dienst
+# Abweichende Leerlaufzeit (leerlauf_vorgabe): aus der Umgebung oder aus der Einstellungsdatei
+# des Hook-Skripts. Die Datei liest der Dienst selbst, weil ihn auch ein anderes Gerät über ssh
+# startet, und dessen Aufruf kennt sie nicht
+LEERLAUF_NAME = "SPRECHDIENST_LEERLAUF"
+LEERLAUF_MIN = 60.0
 START_WARTEN = 15.0  # Sekunden, die ein Aufruf auf den frisch gestarteten Dienst wartet
 BEENDEN_WARTEN = 10.0  # Sekunden, die --beenden auf das Ende des Dienstes wartet
 MIN_SATZ = 40  # kuerzere Saetze werden mit dem naechsten zusammengefasst
@@ -111,6 +119,86 @@ log = logging.getLogger("sprechdienst")
 
 def socket_pfad() -> Path:
     return Path(os.environ.get("SPRECHDIENST_SOCKET", DEFAULT_SOCKET))
+
+
+def konfig_pfad() -> Path:
+    """Einstellungsdatei des Hook-Skripts (integrationen/claude-code), derselbe Ort wie dort."""
+    basis = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(basis) / "hoerbuch-generator" / "sprechen.conf"
+
+
+def _aus_konfig(name: str) -> str | None:
+    """Wert einer Zeile NAME=WERT aus der Einstellungsdatei, gelesen wie konfig_lesen im
+    Hook-Skript, damit dieselbe Zeile hier und dort denselben Wert ergibt: die letzte Zeile mit
+    dem Namen gilt, Werte wie in der Shell gequotet, # nur am Wortanfang ein Kommentar, mehrere
+    Wörter bleiben zusammen. None ohne Datei, ohne Zeile oder bei einer Zeile, die sich nicht
+    lesen lässt."""
+    pfad = konfig_pfad()
+    try:
+        if not pfad.is_file():
+            return None  # auch eine Pipe: Sie hielte den Start des Dienstes beim Lesen fest
+        text = pfad.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return None
+    gefunden = None
+    for zeile in text.splitlines():
+        links, gleich, wert = zeile.strip().partition("=")
+        if not gleich or links.strip() != name or "\0" in wert:
+            continue
+        try:
+            teile = shlex.split(_ohne_kommentar(wert))
+        except ValueError:
+            continue  # konfig_lesen meldet die Zeile und behält einen früheren Wert
+        gefunden = teile[0] if len(teile) == 1 else shlex.join(teile)
+    return gefunden
+
+
+def _ohne_kommentar(wert: str) -> str:
+    """Wert bis vor den Kommentar, wie _ohne_kommentar im Hook-Skript: # beginnt ihn wie in der
+    Shell nur am Anfang eines Worts und außerhalb von Anführungszeichen."""
+    offen = ""  # offenes Anführungszeichen
+    maskiert = False
+    wortanfang = True
+    for i, zeichen in enumerate(wert):
+        davor, wortanfang = wortanfang, False
+        if maskiert:
+            maskiert = False
+        elif offen:
+            if zeichen == offen:
+                offen = ""
+            elif zeichen == "\\" and offen == '"':
+                maskiert = True
+        elif zeichen == "\\":
+            maskiert = True
+        elif zeichen in "'\"":
+            offen = zeichen
+        elif zeichen == "#" and davor:
+            return wert[:i]
+        elif zeichen.isspace():
+            wortanfang = True
+    return wert
+
+
+def leerlauf_vorgabe() -> float:
+    """Sekunden ohne Auftrag, nach denen der Dienst endet: LEERLAUF_NAME aus der Umgebung,
+    sonst aus der Einstellungsdatei, sonst LEERLAUF. Leer zählt wie nicht gesetzt. Ein Wert
+    unter LEERLAUF_MIN, keine Zahl oder unendlich gilt nicht; das steht dann im Protokoll."""
+    wert, herkunft = os.environ.get(LEERLAUF_NAME) or None, "Umgebung"
+    if wert is None:
+        wert, herkunft = _aus_konfig(LEERLAUF_NAME) or None, str(konfig_pfad())
+    if wert is None:
+        return LEERLAUF
+    try:
+        sekunden = float(wert)
+    except ValueError:
+        sekunden = float("nan")
+    # Unendlich hielte die rund 2 GB, bis jemand --beenden aufruft; wer das will, gibt eine
+    # große Zahl an
+    if not (sekunden >= LEERLAUF_MIN and math.isfinite(sekunden)):  # auch nan
+        log.warning("%s=%s aus %s gilt nicht (Sekunden, mindestens %g, endlich), es bleibt "
+                    "bei %d", LEERLAUF_NAME, wert, herkunft, LEERLAUF_MIN, LEERLAUF)
+        return LEERLAUF
+    return sekunden
 
 
 # --- Text ------------------------------------------------------------------------------
@@ -283,7 +371,8 @@ class Dienst:
             # Tests) beendet der Aufrufer den Dienst ueber ende.set() oder {"cmd": "beenden"}
             if threading.current_thread() is threading.main_thread():
                 signal.signal(signal.SIGTERM, lambda *_: self.ende.set())
-            log.info("Dienst lauscht auf %s", self.pfad)
+            log.info("Dienst lauscht auf %s, endet nach %g s ohne Auftrag", self.pfad,
+                     self.leerlauf)
 
             threading.Thread(target=self._sprecher, daemon=True).start()
             while not self.ende.is_set():
@@ -823,7 +912,7 @@ def main() -> int:
     parser.add_argument("--ansage", default="",
                         help="mit --quelle: Satz, der vorangestellt wird, wenn zuletzt eine "
                              "andere Quelle sprach, etwa \"Aus Projekt X.\"")
-    parser.add_argument("--leerlauf", type=float, default=LEERLAUF, help=argparse.SUPPRESS)
+    parser.add_argument("--leerlauf", type=float, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING,
@@ -831,7 +920,8 @@ def main() -> int:
     log.setLevel(logging.INFO)
 
     if args.dienst:
-        return Dienst(socket_pfad(), args.leerlauf).laufen()
+        leerlauf = args.leerlauf if args.leerlauf is not None else leerlauf_vorgabe()
+        return Dienst(socket_pfad(), leerlauf).laufen()
 
     if args.stopp or args.status or args.beenden:
         sonst = args.stopp and args.sonst_aktuell

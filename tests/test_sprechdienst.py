@@ -279,6 +279,87 @@ class LetzteAusgabe(unittest.TestCase):
 
 
 @unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
+class Leerlaufzeit(unittest.TestCase):
+    """SPRECHDIENST_LEERLAUF aus der Umgebung oder der Einstellungsdatei unter
+    XDG_CONFIG_HOME im Testordner."""
+
+    def setUp(self):
+        import sprechdienst
+        self.s = sprechdienst
+        self.tmp = tempfile.TemporaryDirectory()
+        self.datei = Path(self.tmp.name) / "hoerbuch-generator" / "sprechen.conf"
+        self.datei.parent.mkdir()
+        umgebung = {k: v for k, v in os.environ.items() if k != "SPRECHDIENST_LEERLAUF"}
+        self.env = unittest.mock.patch.dict(os.environ, {**umgebung,
+                                                         "XDG_CONFIG_HOME": self.tmp.name},
+                                            clear=True)
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_ohne_einstellung_die_vorgabe(self):
+        self.assertEqual(self.s.leerlauf_vorgabe(), self.s.LEERLAUF)
+
+    def test_aus_der_datei_und_die_umgebung_davor(self):
+        self.datei.write_text("SPRECHEN_GERAETE='hier buero'\n"
+                              "SPRECHDIENST_LEERLAUF='3600'  # eine Stunde\n", encoding="utf-8")
+        self.assertEqual(self.s.leerlauf_vorgabe(), 3600.0)
+        os.environ["SPRECHDIENST_LEERLAUF"] = "7200"
+        self.assertEqual(self.s.leerlauf_vorgabe(), 7200.0)
+
+    def test_unbrauchbar_gilt_nicht(self):
+        for wert in ("30", "eine Stunde", "nan", "-5", "inf", "1e400", "3600 7200"):
+            self.datei.write_text(f"SPRECHDIENST_LEERLAUF={wert}\n", encoding="utf-8")
+            with self.assertLogs("sprechdienst", "WARNING"):
+                self.assertEqual(self.s.leerlauf_vorgabe(), self.s.LEERLAUF, wert)
+        # Eine Zeile, die shlex nicht lesen kann, zählt wie keine
+        self.datei.write_text("SPRECHDIENST_LEERLAUF='3600\n", encoding="utf-8")
+        self.assertEqual(self.s.leerlauf_vorgabe(), self.s.LEERLAUF)
+
+    def test_leer_zaehlt_wie_nicht_gesetzt(self):
+        # Leer in der Datei setzt der Hook als leere Umgebung; beides ohne Warnung
+        self.datei.write_text("SPRECHDIENST_LEERLAUF=\n", encoding="utf-8")
+        os.environ["SPRECHDIENST_LEERLAUF"] = ""
+        with self.assertNoLogs("sprechdienst", "WARNING"):
+            self.assertEqual(self.s.leerlauf_vorgabe(), self.s.LEERLAUF)
+        # Leer in der Umgebung lässt die Datei gelten
+        self.datei.write_text("SPRECHDIENST_LEERLAUF=3600\n", encoding="utf-8")
+        self.assertEqual(self.s.leerlauf_vorgabe(), 3600.0)
+
+    def test_keine_datei_an_der_stelle(self):
+        self.datei.mkdir()
+        self.assertEqual(self.s.leerlauf_vorgabe(), self.s.LEERLAUF)
+        self.datei.rmdir()
+        # Eine Pipe hielte den Start beim Lesen fest
+        os.mkfifo(self.datei)
+        self.assertEqual(self.s.leerlauf_vorgabe(), self.s.LEERLAUF)
+
+    def test_dieselbe_zeile_ergibt_denselben_wert_wie_im_hook_skript(self):
+        sys.path.insert(0, str(REPO / "integrationen" / "claude-code"))
+        import claude_sprechen
+        name = "SPRECHDIENST_LEERLAUF"
+        for text in ("SPRECHDIENST_LEERLAUF=3600\n",
+                     "﻿SPRECHDIENST_LEERLAUF=3600\n",
+                     "SPRECHDIENST_LEERLAUF = \"3600\"  # eine Stunde\n",
+                     "SPRECHDIENST_LEERLAUF=3600#x\n",
+                     "SPRECHDIENST_LEERLAUF=3600 7200\n",
+                     "SPRECHDIENST_LEERLAUF='36 00'\n",
+                     "SPRECHDIENST_LEERLAUF=\n",
+                     "# SPRECHDIENST_LEERLAUF=60\n",
+                     "SPRECHDIENST_LEERLAUF=600\nSPRECHDIENST_LEERLAUF=3600\n",
+                     "SPRECHDIENST_LEERLAUF=600\nSPRECHDIENST_LEERLAUF='3600\n",
+                     "SPRECHDIENST_LEERLAUF=600\nSPRECHDIENST_LEERLAUF=36\x0000\n"):
+            self.datei.write_text(text, encoding="utf-8")
+            self.assertEqual(self.s._aus_konfig(name),
+                             claude_sprechen.konfig_lesen(self.datei)[0].get(name), repr(text))
+        self.datei.write_text("SPRECHDIENST_LEERLAUF=3600\n", encoding="utf-8")
+        self.assertEqual(claude_sprechen.konfig_lesen(self.datei),
+                         ({"SPRECHDIENST_LEERLAUF": "3600"}, []))
+
+
+@unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
 class Stummschalter(unittest.TestCase):
     """Liegt die Datei stumm neben LETZTE_PCM, spielt der Dienst nichts selbst ab, auch einen
     Auftrag nicht, der nach dem Stopp des Stummschalters ankam. Geliefert wird weiter."""

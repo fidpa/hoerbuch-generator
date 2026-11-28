@@ -134,7 +134,7 @@ ihn beendet; den nächsten Start übernimmt der Hook.
 | Ausgabe abbrechen | nur ein Stoppwort eingeben: „Psst“, „Pst“, „Still“ oder „Ruhe“, Satzzeichen egal; Claude bekommt es nicht. Oder `./sprechen.sh --stopp` |
 | Alle Sitzungen auf allen Geräten still, etwa für ein Meeting | `/sprechen stumm`; zurück mit `/sprechen laut`. Claude bekommt beides nicht, siehe unten |
 | Weiterfragen | einfach eingeben: Die laufende Antwort spricht zu Ende, die nächste folgt danach |
-| Dienst beenden | `./sprechen.sh --beenden`; sonst endet er 20 Minuten nach dem letzten Auftrag (Eingaben ohne gesprochene Antwort zählen nicht) |
+| Dienst beenden | `./sprechen.sh --beenden`; sonst endet er 20 Minuten nach dem letzten Auftrag (Eingaben ohne gesprochene Antwort zählen nicht; einstellbar mit `SPRECHDIENST_LEERLAUF`) |
 
 Der Modus gilt je Sitzung.
 
@@ -214,6 +214,15 @@ Player in `SPRECHEN_PLAYER` mit vollem Pfad angeben, `~/bin/player` fände der H
 | `SPRECHEN_AUS` | leer | `1`: alle Hooks tun nichts, für Dienste ohne Nutzer: kein Modus von Anfang an, kein Ton, kein Stoppwort |
 | `SPRECHEN_ENTFERNT`, `SPRECHEN_ENTFERNT_REPO`, `SPRECHEN_PLAYER` | leer | Fernbetrieb, siehe unten |
 | `SPRECHEN_GERAETE`, `SPRECHEN_LEERLAUF` | leer, `1800` | Gerätewahl, siehe unten |
+| `SPRECHDIENST_LEERLAUF` | `1200` | Sekunden ohne Auftrag, nach denen der Sprechdienst endet, mindestens 60 |
+
+**Dienst länger warm halten:** Nach dem Ende des Dienstes lädt der nächste Auftrag das Modell
+neu. Der erste Ton kam dann im Protokoll eines Macs nach rund 6 Sekunden statt nach rund 2
+(gemessen über 315 Antworten, 28.11.2026). `SPRECHDIENST_LEERLAUF=3600` hält den Dienst eine
+Stunde, solange belegt er rund 2 GB Speicher. Die Zeile gehört in die Datei des Macs, auf dem der
+Dienst läuft: Der Dienst liest sie selbst, auch wenn ein anderes Gerät ihn über ssh startet. Sie
+gilt ab dem nächsten Start, `./sprechen.sh --beenden` beendet den laufenden. Eine Zahl unter 60,
+keine Zahl oder `inf` gilt nicht; das steht dann im Protokoll des Dienstes.
 
 **Lautstärke:** Die Stimmen liegen bei rund −21 LUFS, Musik bei Streamingdiensten bei rund
 −14 LUFS. Mit 8 dB lag `marketing.wav` bei −14,0 LUFS (gemessen am 26.11.2026). Geht die Stimme

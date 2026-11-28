@@ -64,6 +64,8 @@ der Datei (konfig_anwenden):
                        in settings.json, wenn der Prompt-Hook sie nicht hat
     SPRECHEN_LEERLAUF  Sekunden; ist jedes Gerät länger unbenutzt, bleibt die Antwort stumm
                        (Standard: 1800)
+    SPRECHDIENST_LEERLAUF  Sekunden ohne Auftrag, nach denen der Sprechdienst auf diesem Gerät
+                       endet (Standard: 1200, mindestens 60); liest der Dienst selbst
 
 Hooks laufen außerhalb einer Bash-Sandbox; nur dort stehen Metal und Audio zur Verfügung.
 Fehler gehen nach stderr und brechen die Sitzung nie ab (Exit 0). Nur Standardbibliothek.
@@ -342,7 +344,10 @@ HOOKS_NOETIG = ("Stop", "UserPromptSubmit")
 # für einen Dienst, nicht für das Gerät
 KONFIG_NAMEN = ("SPRECHEN_STIMME", "SPRECHEN_TEMPO", "SPRECHEN_LAUTER", "SPRECHEN_UNTERBRECHEN",
                 "SPRECHEN_ENTFERNT", "SPRECHEN_ENTFERNT_REPO", "SPRECHEN_PLAYER",
-                "SPRECHEN_GERAETE", "SPRECHEN_LEERLAUF")
+                "SPRECHEN_GERAETE", "SPRECHEN_LEERLAUF", "SPRECHDIENST_LEERLAUF")
+# Gilt für den Sprechdienst, nicht für die Hooks: Er liest die Datei selbst (sprechdienst.py,
+# leerlauf_vorgabe), hier steht der Name nur, damit konfig_lesen die Zeile annimmt
+LEERLAUF_DIENST = "SPRECHDIENST_LEERLAUF"
 # Variablen, die zwischen den Hooks gleich sein müssen, die sie nutzen; True: sonst ein Fehler.
 # Der Prompt-Hook braucht den Fernbetrieb für den Stopp auf dem Mac, die Gerätewahl nicht
 VERGLEICH = (
@@ -1124,7 +1129,8 @@ def konfig_lesen(pfad: Path) -> tuple[dict[str, str], list[str]]:
 
 def _ohne_kommentar(wert: str) -> str:
     """Wert bis vor den Kommentar. # beginnt ihn wie in der Shell nur am Anfang eines Worts
-    und außerhalb von Anführungszeichen; shlex sähe ihn auch mitten im Wort (a#b)."""
+    und außerhalb von Anführungszeichen; shlex sähe ihn auch mitten im Wort (a#b). Eine Kopie
+    steht in sprechdienst.py (SPRECHDIENST_LEERLAUF), ein Test hält beide gleich."""
     offen = ""  # offenes Anführungszeichen
     maskiert = False
     wortanfang = True
@@ -1172,14 +1178,21 @@ def settings_pfad() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
 
 
+def _eigene(name: str) -> bool:
+    """Variable dieser Integration: SPRECHEN_* und die Leerlaufzeit des Dienstes, den der
+    Stop-Hook startet und der seine Umgebung erbt."""
+    return name.startswith("SPRECHEN_") or name == LEERLAUF_DIENST
+
+
 def hooks_lesen(daten: dict) -> tuple[dict[str, str], dict[str, list[str]],
                                        dict[str, dict[str, str]]]:
-    """Aus settings.json: die SPRECHEN_*-Variablen unter env, je Ereignis die Unterbefehle
-    dieses Skripts, die dort eingetragen sind, und je Ereignis die SPRECHEN_*-Variablen vor dem
-    Befehl mit dem passenden Unterbefehl (beim ersten solchen Eintrag)."""
+    """Aus settings.json: die SPRECHEN_*-Variablen und SPRECHDIENST_LEERLAUF unter env, je
+    Ereignis die Unterbefehle dieses Skripts, die dort eingetragen sind, und je Ereignis
+    dieselben Variablen vor dem Befehl mit dem passenden Unterbefehl (beim ersten solchen
+    Eintrag)."""
     env = daten.get("env")
     umgebung = {k: str(v) for k, v in (env.items() if isinstance(env, dict) else ())
-                if k.startswith("SPRECHEN_")}
+                if _eigene(k)}
     eingetragen: dict[str, list[str]] = {}
     praefixe: dict[str, dict[str, str]] = {}
     hooks = daten.get("hooks") or {}
@@ -1204,7 +1217,7 @@ def hooks_lesen(daten: dict) -> tuple[dict[str, str], dict[str, list[str]],
                     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", teil):
                         break
                     name, wert = teil.split("=", 1)
-                    if name.startswith("SPRECHEN_"):
+                    if _eigene(name):
                         praefix[name] = wert
     return umgebung, eingetragen, praefixe
 
@@ -1307,7 +1320,7 @@ def pruefen() -> int:
     # die Einstellungsdatei hat main schon als Vorgabe eingetragen
     os.environ.update({**umgebung, **praefixe.get("Stop", {})})
     aus = os.environ.get("SPRECHEN_AUS") == "1"
-    for name in sorted(k for k in os.environ if k.startswith("SPRECHEN_")):
+    for name in sorted(k for k in os.environ if _eigene(k)):
         if not (aus and name == "SPRECHEN_AUS"):  # dafür folgt der Hinweis
             melden("Variable", f"{name}={os.environ[name]}")
     if aus:
