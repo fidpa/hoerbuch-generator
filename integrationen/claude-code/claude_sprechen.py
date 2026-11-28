@@ -15,14 +15,21 @@ Usage (als Hook, Eingabe ist das Hook-JSON auf stdin; Einrichtung: README.md dan
     .venv/bin/python integrationen/claude-code/claude_sprechen.py notification  Ansage beim Warten
     .venv/bin/python integrationen/claude-code/claude_sprechen.py pruefen  Einrichtung prüfen
 
-start ist für einen SessionStart-Hook: Es gibt die Regeln aus sprechen.md als Kontext aus,
-jede Sitzung beginnt dann im Gesprächsmodus, bis /sprechen aus ihn abschaltet. Den Modus, den
-/sprechen setzt, hält der Prompt-Hook je Sitzung in einer Datei unter XDG_RUNTIME_DIR (sonst
-~/.cache) fest; start, stop und notification lesen sie, so übersteht er das Kompaktieren.
-notification ist für einen Notification-Hook: Wartet Claude auf eine Freigabe oder eine Eingabe,
-spricht es einen festen Satz, wenn der Gesprächsmodus der Sitzung an ist. pruefen ist kein Hook,
-sondern ein Befehl für das Terminal: Er liest die Hook-Einträge aus ~/.claude/settings.json und
-meldet je Gerät, was fehlt (Exit 1).
+Was die Hooks tun, wann sie stumm bleiben und wie Fernbetrieb und Gerätewahl zusammenspielen,
+steht in README.md daneben; hier nur das Nötigste zum Lesen des Codes:
+
+- Den Modus je Sitzung (an, aus, datei) hält eine Datei unter XDG_RUNTIME_DIR (sonst ~/.cache)
+  fest. Der Prompt-Hook schreibt sie bei /sprechen, der SessionStart-Hook beim ersten Start der
+  Sitzung, nach einem Fork aus dem Transkript. Ohne Datei gilt das Transkript.
+- Stop im Modus an ohne Sprechmarke spricht ERSATZ und schreibt eine Zeile in wiedergabe.log,
+  außer die Sitzung pausiert nur (pausiert).
+- Stop- und Prompt-Hook geben die session_id als --quelle mit, ein Stopp trifft die eigene
+  Sitzung. Ein Stoppwort ohne eigene Ausgabe trifft, was gerade klingt (ausgabe_stoppen).
+- Mit SPRECHEN_ENTFERNT oder SPRECHEN_GERAETE läuft die Wiedergabe in einem Hintergrundprozess
+  (abspielen), damit der Stop-Hook sofort zurückkehrt. Sperren: wiedergabe.lock hier für die
+  Sitzungen dieses Geräts, player.lock auf dem abspielenden Gerät (FERN_PLAYER).
+- pruefen ist kein Hook, sondern ein Befehl für das Terminal: Er liest die Hook-Einträge aus
+  ~/.claude/settings.json und meldet je Gerät, was fehlt (Exit 1).
 
 Einstellungen über Umgebungsvariablen:
     SPRECHEN_STIMME  Stimme aus stimmen/ (Standard: marketing, ein ruhiger Gesprächston)
@@ -36,45 +43,16 @@ Einstellungen über Umgebungsvariablen:
                      (Bots, zeitgesteuerte Läufe) und dabei die Einstellungen des Nutzers laden.
                      Kein Modus von Anfang an, kein Ton, kein Stoppwort; die Eingabe geht
                      unverändert an Claude
-
-Abbrechen: Eine neue Eingabe lässt die laufende Antwort zu Ende sprechen, die nächste reiht
-sich dahinter ein. Besteht eine Eingabe nur aus einem Stoppwort (STOPPWORTE, etwa „Psst“),
-endet die Ausgabe der Sitzung, und Claude bekommt die Eingabe nicht (decision block). Läuft
-für die eigene Sitzung nichts, trifft das Stoppwort, was gerade klingt: die Wiedergabe einer
-anderen Sitzung hier, was der Dienst selbst abspielt, und auf jedem Gerät aus SPRECHEN_GERAETE
-den Player, der dort die Sperre hält. Wartende Antworten bleiben.
-
-Mehrere Sitzungen: Stop- und Prompt-Hook geben die session_id als --quelle mit, ein Stopp
-trifft also nur die Ausgabe der eigenen Sitzung. Dazu kommt „Aus <Projekt>.“ als --ansage;
-der Dienst spricht sie nur, wenn zuletzt eine andere Sitzung sprach.
-
-Fernbetrieb, etwa auf Linux ohne MLX: Mit SPRECHEN_ENTFERNT=<ssh-ziel> rechnet der Mac
-dieses ssh-Ziels (sprechen.sh --liefern), und ein lokaler Player spielt den Ton hier ab:
-    SPRECHEN_ENTFERNT       ssh-Ziel, etwa ein Host aus ~/.ssh/config
+    SPRECHEN_ENTFERNT       ssh-Ziel eines Macs, der rechnet (sprechen.sh --liefern); der Ton
+                            spielt hier
     SPRECHEN_ENTFERNT_REPO  Ort dieses Repos dort (Standard: derselbe Pfad unter ~ wie hier)
-    SPRECHEN_PLAYER         Player-Befehl, der 16-Bit-PCM (24 kHz, mono) von stdin spielt;
-                            sonst der erste von paplay, pw-play, aplay, ffmpeg (nur macOS,
-                            über AudioToolbox), ffplay
-Der Stop-Hook übergibt die Wiedergabe einem eigenen Hintergrundprozess und kehrt sofort
-zurück. Eine Sperre unter XDG_RUNTIME_DIR (sonst ~/.cache) hält mehrere Sitzungen dieses
-Geräts in der Reihe; ein Stopp beendet die Wiedergabe der eigenen Sitzung hier und den
-Auftrag auf dem Mac. Läuft für die Sitzung nichts, unterbleibt der ssh-Aufruf.
-
-Ton auf dem Gerät, an dem gerade gearbeitet wird, etwa wenn Claude Code auf einem Server oder
-einem anderen Mac läuft und nur die Oberfläche hier ist (Terminal per ssh, T3 Code):
-    SPRECHEN_GERAETE   Geräte, die den Ton abspielen dürfen, durch Leerzeichen getrennt: ssh-Ziele
-                       oder "hier" für dieses Gerät. Vor jeder Antwort fragt der Hook alle nach
-                       der Zeit seit der letzten Eingabe an Tastatur oder Maus (macOS: ioreg,
-                       Linux mit GNOME: Mutter IdleMonitor) und spielt auf dem zuletzt benutzten.
+    SPRECHEN_PLAYER         Player-Befehl, der 16-Bit-PCM (24 kHz, mono) von stdin spielt
+                            (Standard: der erste aus PLAYER)
+    SPRECHEN_GERAETE   ssh-Ziele oder "hier", durch Leerzeichen getrennt; der Ton spielt auf
+                       dem zuletzt benutzten. Das Stoppwort liest die Variable aus dem Stop-Hook
+                       in settings.json, wenn der Prompt-Hook sie nicht hat
     SPRECHEN_LEERLAUF  Sekunden; ist jedes Gerät länger unbenutzt, bleibt die Antwort stumm
-                       (Standard: 1800). Dann wird woanders gearbeitet, etwa am Handy.
-Auf einem anderen Gerät spielt paplay, unter macOS ffmpeg über AudioToolbox, sonst ffplay,
-aufgerufen über ssh. Eine Sperre dort (~/.cache/hoerbuch-generator/player.lock, braucht
-python3) hält Antworten mehrerer Rechner in der Reihe, die auf demselben Gerät landen; der
-Player des Fernbetriebs hier nimmt dieselbe. Ohne SPRECHEN_ENTFERNT rechnet dieses Gerät
-selbst; fällt die Wahl auf "hier", spielt der Dienst wie gewohnt, und zwar ohne diese Sperre.
-Das Stoppwort liest SPRECHEN_GERAETE aus dem Stop-Hook in settings.json, wenn der Prompt-Hook
-die Variable nicht hat.
+                       (Standard: 1800)
 
 Hooks laufen außerhalb einer Bash-Sandbox; nur dort stehen Metal und Audio zur Verfügung.
 Fehler gehen nach stderr und brechen die Sitzung nie ab (Exit 0). Nur Standardbibliothek.
@@ -133,6 +111,8 @@ HINWEISE = {
 # Eine Rückfrage von Claude kommt in Oberflächen auf Basis des Agent SDK als permission_prompt mit
 # "Claude needs your permission to use AskUserQuestion" (gemessen am 27.11.2026 in T3 Code)
 RUECKFRAGE = "Claude hat eine Frage an dich."
+# Stop im Gesprächsmodus ohne Sprechmarke; sonst bliebe offen, ob Claude noch arbeitet
+ERSATZ = "Fertig, die Antwort steht im Text."
 # So steht ein /sprechen-Aufruf im Transkript (gelesen am 27.11.2026, Claude Code 2.1.332)
 SPRECHEN_COMMAND = "<command-name>/sprechen</command-name>"
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
@@ -345,10 +325,10 @@ def modus_lesen(sitzung: str) -> str | None:
 
 
 def modus(transcript: str) -> str | None:
-    """Gesprächsmodus der Sitzung aus ihrem Transkript: "an", "aus" oder None ohne Hinweis.
-    Es zählt der letzte Eintrag, der Kontext des SessionStart-Hooks (an) oder ein Aufruf von
-    /sprechen (aus und datei: kein Ton, sonst an). Das Transkript-Format ist nicht dokumentiert;
-    ändert es sich, gibt es keinen Hinweis mehr, und die Ansage bleibt stumm."""
+    """Gesprächsmodus der Sitzung aus ihrem Transkript: "an", "aus", "datei" oder None ohne
+    Hinweis. Es zählt der letzte Eintrag, der Kontext des SessionStart-Hooks (an) oder ein
+    Aufruf von /sprechen. Das Transkript-Format ist nicht dokumentiert; ändert es sich, gibt es
+    keinen Hinweis mehr, und Ansage und Ersatzsatz bleiben stumm."""
     zustand = None
     with open(transcript, encoding="utf-8", errors="replace") as datei:
         for zeile in datei:
@@ -367,12 +347,44 @@ def modus(transcript: str) -> str | None:
             if (eintrag.get("type") == "user" and isinstance(inhalt, str)
                     and SPRECHEN_COMMAND in inhalt):
                 treffer = COMMAND_ARGS.search(inhalt)
-                zustand = "an" if _modus_wort(treffer.group(1) if treffer else "") == "an" \
-                    else "aus"
+                zustand = _modus_wort(treffer.group(1) if treffer else "")
             elif (isinstance(anhang, dict) and anhang.get("type") == "hook_additional_context"
                   and START_KENNUNG in str(anhang.get("content"))):
                 zustand = "an"
     return zustand
+
+
+def gespraechsmodus(eingabe: dict) -> str | None:
+    """Modus der Sitzung: zuerst die Datei des Prompt-Hooks, sonst das Transkript (etwa eine
+    Sitzung, die vor dem Update begann, oder eine Oberfläche, die /sprechen anders an den Hook
+    gibt); None, wenn beide nichts sagen."""
+    zustand = modus_lesen(str(eingabe.get("session_id") or ""))
+    transcript = str(eingabe.get("transcript_path") or "")
+    if zustand is None and transcript:
+        try:
+            zustand = modus(transcript)
+        except (OSError, ValueError) as e:  # ValueError: Nullbyte im Pfad
+            log.error("Transkript nicht lesbar: %s", e)
+    return zustand
+
+
+def pausiert(eingabe: dict) -> bool:
+    """Ob der Stop-Hook eine Pause meldet statt eines Endes: Hintergrundaufgaben laufen oder ein
+    Weckruf ist geplant (background_tasks, session_crons). Eine Zwischenmeldung trägt keine
+    Sprechmarke, der Ersatzsatz „Fertig“ wäre dann falsch."""
+    return any(isinstance(eingabe.get(feld), list) and bool(eingabe.get(feld))
+               for feld in ("background_tasks", "session_crons"))
+
+
+def protokollieren(meldung: str) -> None:
+    """Eine Zeile in wiedergabe.log, auch ohne Hintergrundprozess, der dorthin schreibt."""
+    ordner = zustand_ordner()
+    try:
+        ordner.mkdir(parents=True, exist_ok=True)
+        with open(ordner / "wiedergabe.log", "a", encoding="utf-8") as datei:
+            datei.write(f"{time.strftime(LOG_ZEIT)} claude_sprechen: {meldung}\n")
+    except OSError as e:
+        log.error("wiedergabe.log nicht beschreibbar: %s", e)
 
 
 def ansage(eingabe: dict) -> str:
@@ -777,18 +789,7 @@ def hinweis(eingabe: dict) -> str:
     satz = HINWEISE.get(str(eingabe.get("notification_type") or ""), "")
     if not satz:
         return ""
-    # Zuerst die Datei des Prompt-Hooks, sonst das Transkript (etwa eine Sitzung, die vor dem
-    # Update begann, oder eine Oberfläche, die /sprechen anders an den Hook gibt)
-    zustand = modus_lesen(str(eingabe.get("session_id") or ""))
-    transcript = str(eingabe.get("transcript_path") or "")
-    if zustand is None and not transcript:
-        return ""
-    if zustand is None:
-        try:
-            zustand = modus(transcript)
-        except (OSError, ValueError) as e:  # ValueError: Nullbyte im Pfad
-            log.error("Transkript nicht lesbar: %s", e)
-            return ""
+    zustand = gespraechsmodus(eingabe)
     if zustand != "an":
         log.info("Hinweis %s ohne Ton: Gesprächsmodus %s", eingabe.get("notification_type"),
                  zustand or "nicht erkennbar")
@@ -1044,6 +1045,19 @@ def main() -> int:
         # Nach dem Kompaktieren gilt der Modus, den /sprechen in dieser Sitzung gesetzt hat;
         # nach /clear beginnt eine neue Sitzung und mit ihr der Ton
         gesetzt = modus_lesen(sitzung)
+        if gesetzt is None:
+            if eingabe.get("source") in ("resume", "fork", "compact"):
+                # Ein Fork hat eine neue Kennung und damit keine Datei, sein Transkript aber
+                # den Verlauf der Ausgangssitzung; ebenso eine Sitzung von vor v0.10.0 oder
+                # eine, deren Datei weggeräumt ist (MODUS_HALTEN, Neustart bei XDG_RUNTIME_DIR)
+                gesetzt = gespraechsmodus(eingabe)
+            if sitzung:
+                # Auch "an": Ohne Datei läsen Stop- und Notification-Hook jedes Mal das
+                # Transkript, um den Modus zu erfahren
+                try:
+                    modus_schreiben(sitzung, gesetzt or "an")
+                except OSError as e:
+                    log.error("Modus nicht festgehalten: %s", e)
         if gesetzt == "aus":
             return 0
         try:
@@ -1100,6 +1114,10 @@ def main() -> int:
         text = ""
     else:
         text = gesprochener_text(str(eingabe.get("last_assistant_message", "")))
+        if not text and not pausiert(eingabe) and gespraechsmodus(eingabe) == "an":
+            # Die Zeile zählt, wie oft Claude die Marke vergisst
+            protokollieren(f"Antwort ohne Sprechmarke, Ersatzsatz ({_kennung(sitzung)})")
+            text = ERSATZ
     if text:
         sprechen_lassen(eingabe, text)
     return 0

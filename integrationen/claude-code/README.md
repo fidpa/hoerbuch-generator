@@ -66,8 +66,19 @@ Den Modus, den `/sprechen` setzt, hält der UserPromptSubmit-Hook je Sitzung in 
 räumt das nächste Schreiben weg). Beim Kompaktieren und beim Fortsetzen bleibt die
 Sitzungskennung gleich, und der SessionStart-Hook gibt den gesetzten Modus aus: nach
 `/sprechen aus` keinen Kontext, nach `/sprechen datei` den Abschnitt „Bei datei“ samt den Regeln
-„Knapp“ und „Natürlich“. Nach `/clear` und in einem Fork (`--fork-session`, `/branch`) beginnt
-eine neue Sitzung, dann ist der Ton wieder an.
+„Knapp“ und „Natürlich“. Beim ersten Start einer Sitzung legt der SessionStart-Hook die Datei mit
+„an“ an. Ein Fork (`--fork-session`, `/branch`, `/fork`, eine Sitzung, die in den Hintergrund
+wandert) bekommt eine neue Sitzungskennung, sein Transkript enthält aber den Verlauf der
+Ausgangssitzung; der Hook liest den Modus dann von dort. Ebenso beim Fortsetzen und Kompaktieren,
+wenn die Datei fehlt, etwa bei einer Sitzung, die vor v0.10.0 begann. Nach `/clear` beginnt eine
+neue Sitzung, dann ist der Ton wieder an.
+
+Bricht man `/sprechen aus` mit Esc ab, während Claude schon antwortet, bleibt der Aufruf im
+Verlauf und die Datei passt dazu. Bricht man ab, solange die Hooks die Eingabe noch prüfen,
+kommt sie nicht bei Claude an
+([Hook-Doku](https://code.claude.com/docs/en/hooks.md#userpromptsubmit)); hat der Hook die Datei
+in diesen Millisekunden schon geschrieben, gilt sie trotzdem. Dann `/sprechen` oder
+`/sprechen aus` noch einmal eingeben.
 
 Startet ein Dienst Claude ohne Nutzer und lädt dabei die Einstellungen des Nutzers (ein Bot
 über das Agent SDK mit `settingSources: ["user", …]`, ein zeitgesteuertes `claude -p` ohne
@@ -125,6 +136,15 @@ ihn beendet; den nächsten Start übernimmt der Hook.
 | Dienst beenden | `./sprechen.sh --beenden`; sonst endet er 20 Minuten nach dem letzten Auftrag (Eingaben ohne gesprochene Antwort zählen nicht) |
 
 Der Modus gilt je Sitzung.
+
+**Antwort ohne Sprechmarke:** Vergisst Claude im Gesprächsmodus die Marke, etwa nach einer langen
+Kette von Werkzeugaufrufen, sagt der Stop-Hook „Fertig, die Antwort steht im Text.“ und schreibt
+eine Zeile `Antwort ohne Sprechmarke` in `wiedergabe.log` (im Zustandsordner wie die Modus-Datei).
+Die Zeilen zeigen, wie oft das vorkommt. Im Modus `aus` und `datei` und in Sitzungen, für die
+weder Datei noch Transkript den Gesprächsmodus belegen, bleibt es still. Still bleibt es auch,
+wenn Claude nur pausiert: Meldet der Stop-Hook laufende Hintergrundaufgaben oder einen geplanten
+Weckruf (`background_tasks`, `session_crons`), ist die Antwort eine Zwischenmeldung, und die
+trägt keine Marke.
 
 **Mehrere Sitzungen:** Antworten aus verschiedenen Sitzungen spricht der Dienst nacheinander.
 Ein Stoppwort bricht die Ausgabe der eigenen Sitzung ab. Läuft für sie nichts, trifft es die

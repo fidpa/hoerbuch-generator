@@ -32,6 +32,21 @@ START = {"type": "attachment", "attachment": {"type": "hook_additional_context",
     "des Hörbuch-Generators) …"]}}
 
 
+def _ps_geht() -> bool:
+    """Ob _gehoert_uns eine Befehlszeile lesen kann. Ohne beides gibt es True zurück, und der
+    Test zur fremden PID schlüge fehl, ohne dass der Code falsch wäre."""
+    if Path("/proc/self/cmdline").exists():
+        return True
+    try:
+        return subprocess.run(["ps", "-p", str(os.getpid()), "-o", "command="],
+                              capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+PS_GEHT = _ps_geht()
+
+
 class Marke(unittest.TestCase):
     def test_ohne_marke_nichts(self):
         self.assertEqual(gesprochener_text("Nur eine Antwort mit `code`."), "")
@@ -216,7 +231,7 @@ class Hook(unittest.TestCase):
     def test_der_letzte_aufruf_zaehlt(self):
         self.assertNotEqual(self._hinweis(START, self._command("aus"), self._command()), "")
         self.protokoll.unlink(missing_ok=True)
-        # Ohne Modus-Datei, etwa in einem Fork, setzt der SessionStart-Hook den Modus wieder an
+        # Steht der Kontext des SessionStart-Hooks nach dem Aufruf, gilt wieder an
         self.assertNotEqual(self._hinweis(self._command("aus"), START), "")
 
     def test_ohne_gespraechsmodus_stumm(self):
@@ -246,9 +261,11 @@ class Hook(unittest.TestCase):
         dateien = list(ordner.iterdir()) if ordner.exists() else []
         return dateien[0].read_text(encoding="utf-8").strip() if len(dateien) == 1 else None
 
-    def _start(self) -> str:
-        lauf = subprocess.run([sys.executable, str(SKRIPT), "start"],
-                              input=json.dumps({"session_id": "abc", "source": "compact"}),
+    def _start(self, sitzung: str = "abc", source: str = "compact", transcript: str = "") -> str:
+        eingabe = {"session_id": sitzung, "source": source}
+        if transcript:
+            eingabe["transcript_path"] = transcript
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "start"], input=json.dumps(eingabe),
                               text=True, capture_output=True, env=self._env())
         self.assertEqual(lauf.returncode, 0)
         return lauf.stdout
@@ -328,6 +345,94 @@ class Hook(unittest.TestCase):
         self._prompt("/sprechen datei")
         self.assertFalse(alt.exists())
         self.assertEqual(self._modus(), "datei")
+
+    # --- Fork: neue Kennung, Verlauf der Ausgangssitzung im Transkript ----------------------
+
+    def test_fork_uebernimmt_den_modus_aus_dem_transkript(self):
+        verlauf = self._transkript(START, self._command("aus"))
+        self.assertEqual(self._start("fork1", "fork", verlauf), "")
+        self.assertEqual(self._modus(), "aus")
+        rc, aufruf = self._lauf("stop", {"session_id": "fork1",
+                                         "last_assistant_message": "<!-- sprechen: Hallo. -->"})
+        self.assertEqual((rc, aufruf), (0, ""))
+
+    def test_fork_im_datei_modus(self):
+        kontext = self._start("fork1", "fork", self._transkript(START, self._command("datei")))
+        self.assertIn("steht auf Datei", kontext)
+        self.assertEqual(self._modus(), "datei")
+
+    def test_neue_sitzung_liest_kein_transkript_und_haelt_an_fest(self):
+        # Nach /clear oder beim Start gehört ein Transkript nicht zu einem früheren Modus
+        kontext = self._start("neu", "startup", self._transkript(START, self._command("aus")))
+        self.assertIn("von Anfang an eingeschaltet", kontext)
+        self.assertEqual(self._modus(), "an")
+
+    def test_fork_ohne_hinweis_im_transkript_beginnt_mit_ton(self):
+        kontext = self._start("fork1", "fork", self._transkript(self._command()))
+        self.assertIn("von Anfang an eingeschaltet", kontext)
+        self.assertIn("von Anfang an eingeschaltet",
+                      self._start("fork2", "fork", str(self.tmp / "fehlt.jsonl")))
+
+    # --- Ersatzsatz, wenn die Sprechmarke fehlt -------------------------------------------
+
+    def _log(self) -> str:
+        datei = self.tmp / "run" / "hoerbuch-generator" / "wiedergabe.log"
+        return datei.read_text(encoding="utf-8") if datei.exists() else ""
+
+    def test_ohne_marke_im_gespraechsmodus_spricht_der_ersatzsatz(self):
+        self._start("abc", "startup")
+        rc, aufruf = self._lauf("stop", {"session_id": "abc", "last_assistant_message": "Text."})
+        self.assertEqual(rc, 0)
+        self.assertEqual(aufruf, "-v marketing -t 1.1 --lauter 8 --quelle abc -\n"
+                                 "Fertig, die Antwort steht im Text.")
+        self.assertRegex(self._log(), r"\d\d:\d\d:\d\d claude_sprechen: Antwort ohne Sprechmarke")
+
+    def test_ersatzsatz_auch_nach_dem_transkript(self):
+        # Eine Sitzung von vor dem Update hat keine Datei
+        rc, aufruf = self._lauf("stop", {"session_id": "abc", "last_assistant_message": "",
+                                         "transcript_path": self._transkript(START)})
+        self.assertEqual(rc, 0)
+        self.assertTrue(aufruf.endswith("Fertig, die Antwort steht im Text."), aufruf)
+
+    def test_kein_ersatzsatz_wenn_die_sitzung_nur_pausiert(self):
+        # Hintergrundarbeit oder ein Weckruf: Die Antwort ist eine Zwischenmeldung ohne Marke
+        self._start("abc", "startup")
+        for feld, wert in (("background_tasks", [{"id": "b1", "type": "shell"}]),
+                           ("session_crons", [{"id": "c1", "recurring": False}])):
+            rc, aufruf = self._lauf("stop", {"session_id": "abc", "last_assistant_message": "Text.",
+                                             feld: wert})
+            self.assertEqual((rc, aufruf), (0, ""), feld)
+        self.assertEqual(self._log(), "")
+        # Leere Listen heißen: nichts in Arbeit
+        rc, aufruf = self._lauf("stop", {"session_id": "abc", "last_assistant_message": "Text.",
+                                         "background_tasks": [], "session_crons": []})
+        self.assertTrue(aufruf.endswith("Fertig, die Antwort steht im Text."), aufruf)
+
+    def test_kompaktieren_ohne_datei_liest_das_transkript(self):
+        # Die Datei ist weggeräumt, das Transkript sagt aus: Das Kompaktieren schaltet nicht an
+        self.assertEqual(self._start("abc", "compact",
+                                     self._transkript(START, self._command("aus"))), "")
+        self.assertEqual(self._modus(), "aus")
+
+    def test_kein_ersatzsatz_ausserhalb_des_gespraechsmodus(self):
+        # Modus aus, Datei-Modus oder kein Hinweis auf den Modus: stumm, keine Zeile
+        for vorher in ("/sprechen aus", "/sprechen datei", None):
+            self.protokoll.unlink(missing_ok=True)
+            shutil.rmtree(self.tmp / "run", ignore_errors=True)
+            if vorher:
+                self._prompt(vorher)
+            rc, aufruf = self._lauf("stop", {"session_id": "abc",
+                                             "last_assistant_message": "Text."})
+            self.assertEqual((rc, aufruf), (0, ""), vorher)
+            self.assertEqual(self._log(), "", vorher)
+
+    def test_ersatzsatz_ohne_schreibrecht_fuer_das_protokoll(self):
+        self._start("abc", "startup")
+        log = self.tmp / "run" / "hoerbuch-generator" / "wiedergabe.log"
+        log.mkdir()  # ein Ordner statt der Datei: open scheitert
+        rc, aufruf = self._lauf("stop", {"session_id": "abc", "last_assistant_message": "Text."})
+        self.assertEqual(rc, 0)
+        self.assertTrue(aufruf.endswith("Fertig, die Antwort steht im Text."), aufruf)
 
     def test_fehlender_generator_bricht_nicht_ab(self):
         lauf = subprocess.run([sys.executable, str(SKRIPT), "stop"],
@@ -410,6 +515,7 @@ class Fernbetrieb(unittest.TestCase):
                 p.wait()
         self.assertIn("--stopp --quelle abc", self.protokoll.read_text(encoding="utf-8"))
 
+    @unittest.skipUnless(PS_GEHT, "weder /proc noch ps (etwa in einer Sandbox)")
     def test_fremde_pid_wird_nicht_beendet(self):
         # Eine Marke, deren PID inzwischen einem anderen Prozess gehört, auf Linux wie macOS
         import claude_sprechen

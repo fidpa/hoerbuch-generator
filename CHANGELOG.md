@@ -6,6 +6,30 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.12.0] - 2026-11-28: Ein Satz statt Stille, und der Fork behält den Modus
+
+### Hinzugefügt
+
+- **Ersatzsatz, wenn die Sprechmarke fehlt:** Vergaß Claude im Gesprächsmodus die Marke, blieb
+  die Antwort stumm, und am Ton war nicht zu erkennen, ob Claude noch arbeitet. Jetzt sagt der
+  Stop-Hook „Fertig, die Antwort steht im Text.“ und schreibt eine Zeile in `wiedergabe.log`, die
+  zählt, wie oft das vorkommt. Im Modus `aus` und `datei` bleibt es still, ebenso in Sitzungen
+  ohne Hinweis auf den Gesprächsmodus und solange Hintergrundaufgaben laufen oder ein Weckruf
+  geplant ist: Dann ist die Antwort eine Zwischenmeldung ohne Marke.
+
+### Geändert
+
+- **Ein Fork übernimmt den Modus:** Ein Fork (`--fork-session`, `/branch`, `/fork`) bekam eine
+  neue Sitzungskennung und begann nach `/sprechen aus` wieder mit Ton. Jetzt liest der
+  SessionStart-Hook bei `source` `fork`, `resume` und `compact` ohne Modus-Datei den letzten
+  Aufruf von `/sprechen` aus dem Transkript. Beim ersten Start einer Sitzung legt er die Datei mit
+  „an“ an.
+- **Docstring des Hook-Skripts gekürzt:** Verhalten und Einrichtung stehen in der README der
+  Integration, der Docstring nennt nur noch, was zum Lesen des Codes nötig ist, und die
+  Umgebungsvariablen.
+- **Test zur fremden PID** wird übersprungen, wo weder `/proc` noch `ps` eine Befehlszeile liefert,
+  etwa in einer Sandbox.
+
 ## [0.11.0] - 2026-11-28: Zwei Rechner, ein Gerät, eine Antwort nach der anderen
 
 ### Hinzugefügt
@@ -285,6 +309,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.12.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.12.0
 [0.11.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.11.0
 [0.10.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.10.0
 [0.9.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.9.0
