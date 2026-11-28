@@ -14,6 +14,8 @@ Usage (als Hook, Eingabe ist das Hook-JSON auf stdin; Einrichtung: README.md dan
     .venv/bin/python integrationen/claude-code/claude_sprechen.py start    Modus von Anfang an
     .venv/bin/python integrationen/claude-code/claude_sprechen.py notification  Ansage beim Warten
     .venv/bin/python integrationen/claude-code/claude_sprechen.py pruefen  Einrichtung prüfen
+    python3 integrationen/claude-code/claude_sprechen.py taste-stopp  beenden, was hier klingt
+    python3 integrationen/claude-code/claude_sprechen.py nochmal      letzte Antwort hier noch einmal
 
 Was die Hooks tun, wann sie stumm bleiben und wie Fernbetrieb und Gerätewahl zusammenspielen,
 steht in README.md daneben; hier nur das Nötigste zum Lesen des Codes:
@@ -30,6 +32,8 @@ steht in README.md daneben; hier nur das Nötigste zum Lesen des Codes:
   Sitzungen dieses Geräts, player.lock auf dem abspielenden Gerät (FERN_PLAYER).
 - pruefen ist kein Hook, sondern ein Befehl für das Terminal: Er liest die Hook-Einträge aus
   ~/.claude/settings.json und meldet je Gerät, was fehlt (Exit 1).
+- taste-stopp und nochmal sind für Tastenkürzel auf dem Gerät, das spielt: Sie wirken auf
+  player.lock und LETZTE_PCM daneben, wo der Dienst läuft auch auf dessen eigene Wiedergabe.
 
 Einstellungen über Umgebungsvariablen:
     SPRECHEN_STIMME  Stimme aus stimmen/ (Standard: marketing, ein ruhiger Gesprächston)
@@ -130,6 +134,7 @@ TIMEOUT = 30  # Sekunden; sprechen.sh kehrt nach dem Annehmen des Auftrags zurü
 SSH_OPTIONEN = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
                 "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
 STOPP_TIMEOUT = 8
+TASTE_QUELLE = "tastenkuerzel"  # spricht nie, siehe taste_stopp
 # Obergrenze einer Wiedergabe, falls trotzdem etwas hängt: Grundzeit für Warteschlange und
 # Modellstart, dazu reichlich Zeit je Zeichen (die Stimme spricht rund 15 Zeichen je Sekunde)
 OBERGRENZE_GRUND = 120
@@ -180,13 +185,21 @@ SPIELER_WAHL = (
 # ssh fassen aber bis zu zwei MB, rund 40 Sekunden Ton. macOS hat kein flock(1), deshalb
 # Python. Gesperrt wird erst, wenn Ton ankommt: Ein Player, der auf einen noch nicht
 # gerechneten Auftrag wartet, hielte sonst die Sperre, während der Mac den Auftrag davor nicht
-# loswird. Der Player erbt die Sperre und gibt sie mit seinem Ende frei; die Datei nennt seine
-# PID und den Beginn für das Stoppwort. Gewartet wird in Runden statt blockierend: Ist ssh
+# loswird. Der Halter gibt die Sperre mit dem Ende des Players frei; die Datei nennt seine PID
+# und den Beginn für das Stoppwort. Gewartet wird in Runden statt blockierend: Ist ssh
 # fort (Stopp beim Warten), wechselt der Elternprozess, und der Wartende endet sofort still.
 # Reißt die Verbindung ohne Abbau ab (Gerät schlief ein), wartet der Player ohne Ende auf
 # Ton, und sshd merkt es erst nach Stunden; ein Halter älter als SPERRE_ALTER gilt deshalb als
 # hängend und wird beendet. Ohne Sperrdatei spielt der Player ohne Sperre.
+# Mit Sperre ist der Player ein Kind, und der Halter schreibt den Ton neben der Sperrdatei mit
+# (LETZTE_PCM, auch abgebrochen): „Nochmal“ spielt ihn auf dem Gerät, das ihn gespielt hat.
+# Liest der Halter eine Datei, ist das „Nochmal“, und er schreibt nicht mit: Ein Stopp
+# mittendrin kürzte sonst die letzte Antwort. Ein SIGTERM an den Halter (Stoppwort,
+# Tastenkürzel, hängender Halter) beendet auch den Player, ebenso das Ende des Elternprozesses
+# (Stoppwort der eigenen Sitzung, ssh fort): Sonst spielte der Player noch die Puffer von
+# Halter und Pipe aus, länger als einst mit exec
 SPERRE_DATEI = "$HOME/.cache/hoerbuch-generator/player.lock"
+LETZTE_PCM = "letzte.pcm"
 SPERRE_ALTER = 600  # Sekunden; eine gesprochene Antwort dauert selten eine Minute
 SPERRE_PY = (
     "import fcntl, os, select, sys, time\n"
@@ -215,10 +228,63 @@ SPERRE_PY = (
     "    time.sleep(0.2)\n"
     "if os.getppid() != eltern or eltern == 1:\n"
     "    sys.exit(0)\n"
-    "if f is not None:\n"
-    "    f.seek(0); f.truncate(); f.write('%d %d' % (os.getpid(), time.time())); f.flush()\n"
-    "    os.set_inheritable(f.fileno(), True)\n"
-    "os.execvp(sys.argv[2], sys.argv[2:])\n")
+    "if f is None:\n"
+    "    os.execvp(sys.argv[2], sys.argv[2:])\n"
+    "f.seek(0); f.truncate(); f.write('%d %d' % (os.getpid(), time.time())); f.flush()\n"
+    "import signal, stat, subprocess, threading\n"
+    "def ende(*_):\n"
+    "    raise SystemExit(143)\n"
+    "signal.signal(signal.SIGTERM, ende)\n"
+    "def wache():\n"
+    "    while os.getppid() == eltern:\n"
+    "        time.sleep(0.2)\n"
+    "    signal.pthread_kill(threading.main_thread().ident, signal.SIGTERM)\n"
+    "threading.Thread(target=wache, daemon=True).start()\n"
+    f"ton = os.path.join(os.path.dirname(sys.argv[1]), {LETZTE_PCM!r})\n"
+    "neu = '%s.%d' % (ton, os.getpid())\n"
+    "aus = kind = None\n"
+    "rc = 0\n"
+    "try:\n"
+    "    if not stat.S_ISREG(os.fstat(0).st_mode):\n"
+    "        try:\n"
+    "            aus = open(neu, 'wb')\n"
+    "        except OSError:\n"
+    "            pass\n"
+    "    kind = subprocess.Popen(sys.argv[2:], stdin=subprocess.PIPE)\n"
+    "    try:\n"
+    "        while True:\n"
+    "            block = os.read(0, 65536)\n"
+    "            if not block:\n"
+    "                break\n"
+    "            if aus is not None:\n"
+    "                aus.write(block)\n"
+    "            kind.stdin.write(block)\n"
+    "            kind.stdin.flush()\n"
+    "        kind.stdin.close()\n"
+    "    except BrokenPipeError:\n"
+    "        pass\n"
+    "    rc = kind.wait()\n"
+    "except SystemExit as e:\n"
+    "    if kind is not None:\n"
+    "        kind.terminate()\n"
+    "        kind.wait()\n"
+    "        try:\n"
+    "            kind.stdin.close()\n"
+    "        except OSError:\n"
+    "            pass\n"
+    "    rc = e.code\n"
+    "finally:\n"
+    "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "    if aus is not None:\n"
+    "        aus.close()\n"
+    "        try:\n"
+    "            if os.path.getsize(neu):\n"
+    "                os.replace(neu, ton)\n"
+    "            else:\n"
+    "                os.unlink(neu)\n"
+    "        except OSError:\n"
+    "            pass\n"
+    "sys.exit(rc)\n")
 # Unter macOS ohne Command Line Tools ist /usr/bin/python3 nur ein Platzhalter: Er scheitert
 # und öffnet bei jedem Aufruf den Dialog zur Installation. xcode-select -p fragt, ohne ihn
 SPERRE_DA = ('{ [ "$(uname)" != Darwin ] || [ "$(command -v python3)" != /usr/bin/python3 ] '
@@ -581,7 +647,9 @@ def abspielen(auftrag: dict) -> int:
                 except BrokenPipeError:
                     pass
                 frist = OBERGRENZE_GRUND + OBERGRENZE_JE_ZEICHEN * len(auftrag["text"])
-                if not _warten(spieler, frist):
+                # Erst SIGTERM: Der Halter der Sperre beendet dann seinen Player und gibt den
+                # Mitschnitt frei, ein SIGKILL ließe einen hängenden Player ohne Sperre stehen
+                if not _warten(spieler, frist, gnade=2):
                     log.error("Wiedergabe auf %s nach %d s abgebrochen (Obergrenze)",
                               geraet or HIER, frist)
                     _warten(ssh, 0)
@@ -619,12 +687,20 @@ def _weiterleiten(strom, name: str) -> threading.Thread:
     return faden
 
 
-def _warten(prozess: subprocess.Popen, frist: float) -> bool:
-    """Auf das Ende warten; nach Ablauf der Frist den Prozess beenden und False liefern."""
+def _warten(prozess: subprocess.Popen, frist: float, gnade: float = 0) -> bool:
+    """Auf das Ende warten; nach Ablauf der Frist den Prozess beenden und False liefern. Mit
+    gnade erst SIGTERM und so viele Sekunden Zeit, dann SIGKILL."""
     try:
         prozess.wait(timeout=frist)
         return True
     except subprocess.TimeoutExpired:
+        if gnade:
+            prozess.terminate()
+            try:
+                prozess.wait(timeout=gnade)
+                return False
+            except subprocess.TimeoutExpired:
+                pass
         prozess.kill()
         prozess.wait()
         return False
@@ -762,6 +838,54 @@ def ausgabe_stoppen(sitzung: str, quelle: list[str], entfernt: str,
                        capture_output=True, timeout=STOPP_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
         log.error("Stopp auf %s gescheitert: %s", entfernt, e)
+
+
+def taste_stopp() -> int:
+    """Tastenkürzel: beenden, was auf diesem Gerät klingt. Das ist der Halter der Sperre
+    (FERN_PLAYER, Fernbetrieb, „Nochmal“) und, wo der Dienst selbst spielt, dessen Auftrag.
+    Wartende Antworten bleiben, wie beim Stoppwort ohne eigene Ausgabe."""
+    sperre = player_sperre()
+    if sperre.exists():
+        try:
+            subprocess.run([sys.executable, "-c", STOPP_PY, str(sperre)], timeout=STOPP_TIMEOUT,
+                           stdin=subprocess.DEVNULL, capture_output=True)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.error("Sperre nicht prüfbar: %s", e)
+    # Eine Quelle ohne Aufträge: So trifft --sonst-aktuell nur, was der Dienst selbst abspielt.
+    # Ohne .venv läuft hier kein Dienst (etwa ein Gerät, das nur abspielt)
+    if (sprechen_sh().parent / ".venv" / "bin" / "python").exists():
+        _stopp_hier(["--quelle", TASTE_QUELLE, "--sonst-aktuell"], STOPP_TIMEOUT)
+    return 0
+
+
+def nochmal() -> int:
+    """Tastenkürzel: die letzte Antwort, die dieses Gerät gespielt hat, noch einmal, unter
+    derselben Sperre. Kehrt sofort zurück; der Player läuft in eigener Sitzung."""
+    ton = player_sperre().with_name(LETZTE_PCM)
+    # Eine Kurzbefehle-App startet ohne Homebrew im PATH, wie ssh (FERN_PATH)
+    os.environ["PATH"] = os.environ.get("PATH", "") + ":/opt/homebrew/bin:/usr/local/bin"
+    player = player_befehl()
+    if not ton.exists():
+        log.error("Noch keine Antwort auf diesem Gerät gespielt (%s fehlt)", ton)
+        return 1
+    if not player:
+        log.error("kein Player (paplay, pw-play, aplay, ffmpeg, ffplay, SPRECHEN_PLAYER)")
+        return 1
+    ordner = zustand_ordner()
+    try:
+        ordner.mkdir(parents=True, exist_ok=True)
+        with open(ton, "rb") as eingabe, open(ordner / "wiedergabe.log", "a") as protokoll:
+            # Ein Zwischenprozess wartet auf SPERRE_PY: Endete dessen Elternprozess, hielte es
+            # das für ein beendetes ssh und gäbe auf
+            subprocess.Popen([sys.executable, "-c",
+                              "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))",
+                              sys.executable, "-c", SPERRE_PY, str(player_sperre()), *player],
+                             stdin=eingabe, stdout=subprocess.DEVNULL, stderr=protokoll,
+                             start_new_session=True)
+    except OSError as e:
+        log.error("Nochmal nicht startbar: %s", e)
+        return 1
+    return 0
 
 
 def sprechen_lassen(eingabe: dict, text: str) -> None:
@@ -1011,7 +1135,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Claude-Code-Hooks für den Sprechdienst")
     # abspielen ist intern: der Hintergrundprozess des Fernbetriebs
     parser.add_argument("ereignis", choices=["stop", "prompt", "start", "notification",
-                                             "pruefen", "abspielen"])
+                                             "pruefen", "abspielen", "taste-stopp", "nochmal"])
     try:
         args = parser.parse_args()
     except SystemExit:
@@ -1023,6 +1147,11 @@ def main() -> int:
 
     if args.ereignis == "pruefen":
         return pruefen()
+    # Tastenkürzel lesen kein stdin: Eine Kurzbefehle-App reicht womöglich nichts herein
+    if args.ereignis == "taste-stopp":
+        return taste_stopp()
+    if args.ereignis == "nochmal":
+        return nochmal()
 
     try:
         eingabe = json.load(sys.stdin)

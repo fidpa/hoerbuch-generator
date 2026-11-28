@@ -696,8 +696,13 @@ class SperreAmPlayer(unittest.TestCase):
 
     def tearDown(self):
         for prozess in self.prozesse:
-            prozess.kill()
-            prozess.wait()
+            # Erst SIGTERM: Der Halter beendet dann auch seinen Player, ein kill ließe ihn stehen
+            prozess.terminate()
+            try:
+                prozess.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                prozess.kill()
+                prozess.wait()
             if prozess.stdin:
                 prozess.stdin.close()
         shutil.rmtree(self.tmp)
@@ -729,7 +734,7 @@ class SperreAmPlayer(unittest.TestCase):
 
     def test_stopp_beendet_den_halter_und_sonst_nichts(self):
         stopp = [sys.executable, "-c", self.c.STOPP_PY, str(self.sperre)]
-        # Wie die echten Player per exec: Der Prozess mit der PID aus der Datei hält die Sperre
+        # Der Prozess mit der PID aus der Datei ist der Halter, der Player sein Kind
         a = self._player("a", spieler=f'echo "start $1" >> "{self.ablauf}"; cat > /dev/null; '
                                       "exec sleep 30")
         a.stdin.write(b"PCM")
@@ -741,6 +746,114 @@ class SperreAmPlayer(unittest.TestCase):
         self.assertNotEqual(a.wait(timeout=5), 0)
         # Sperre frei: Der Stopp findet niemanden und endet ohne Fehler
         self.assertEqual(subprocess.run(stopp, timeout=10).returncode, 0)
+
+    def test_der_ton_wird_fuer_nochmal_mitgeschrieben(self):
+        ausgabe = self.tmp / "gespielt.pcm"
+        a = self._player("a", spieler=f'cat > "{ausgabe}"')
+        a.stdin.write(b"PCM-eins")
+        a.stdin.close()
+        self.assertEqual(a.wait(timeout=10), 0)
+        self.assertEqual(ausgabe.read_bytes(), b"PCM-eins")
+        self.assertEqual((self.sperre.parent / "letzte.pcm").read_bytes(), b"PCM-eins")
+        # Ein leerer Auftrag überschreibt die letzte Antwort nicht
+        b = self._player("b", spieler="cat > /dev/null")
+        b.stdin.close()
+        self.assertEqual(b.wait(timeout=10), 0)
+        self.assertEqual((self.sperre.parent / "letzte.pcm").read_bytes(), b"PCM-eins")
+        self.assertEqual(sorted(p.name for p in self.sperre.parent.iterdir()),
+                         ["letzte.pcm", "player.lock"])
+
+    def test_stopp_beendet_auch_den_player_und_behaelt_den_anfang(self):
+        pid = self.tmp / "player.pid"
+        a = self._player("a", spieler=f'echo $$ > "{pid}"; exec sleep 30')
+        a.stdin.write(b"Anfang")
+        a.stdin.flush()
+        frist = time.monotonic() + 5
+        while not (pid.exists() and pid.read_text().strip()) and time.monotonic() < frist:
+            time.sleep(0.05)
+        spieler = int(pid.read_text())
+        time.sleep(0.2)  # der Halter hat den Block weitergereicht
+        subprocess.run([sys.executable, "-c", self.c.STOPP_PY, str(self.sperre)], timeout=10)
+        self.assertEqual(a.wait(timeout=5), 143)
+        frist = time.monotonic() + 5
+        while time.monotonic() < frist:
+            try:
+                os.kill(spieler, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(spieler, 9)
+            self.fail("der Player lebt nach dem Stopp noch")
+        self.assertEqual((self.sperre.parent / "letzte.pcm").read_bytes(), b"Anfang")
+
+    def test_endet_der_elternprozess_endet_auch_der_player(self):
+        # Wie ssh, das beim Stoppwort der eigenen Sitzung fortfällt: stdin bleibt hier offen,
+        # nur der Elternprozess endet. Der Player soll nicht erst die Puffer ausspielen
+        pid = self.tmp / "player.pid"
+        zwischen = subprocess.Popen(
+            [sys.executable, "-c", "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))",
+             sys.executable, "-c", self.c.SPERRE_PY, str(self.sperre),
+             "sh", "-c", f'echo $$ > "{pid}"; exec cat > /dev/null'], stdin=subprocess.PIPE)
+        self.prozesse.append(zwischen)
+        zwischen.stdin.write(b"Anfang")
+        zwischen.stdin.flush()
+        frist = time.monotonic() + 5
+        while not (pid.exists() and pid.read_text().strip()) and time.monotonic() < frist:
+            time.sleep(0.05)
+        spieler = int(pid.read_text())
+        time.sleep(0.2)
+        zwischen.kill()
+        zwischen.wait()
+        frist = time.monotonic() + 3
+        while time.monotonic() < frist:
+            try:
+                os.kill(spieler, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(spieler, 9)
+            self.fail("der Player lebt nach dem Ende des Elternprozesses noch")
+        frist = time.monotonic() + 3
+        while not (self.sperre.parent / "letzte.pcm").exists() and time.monotonic() < frist:
+            time.sleep(0.05)
+        self.assertEqual((self.sperre.parent / "letzte.pcm").read_bytes(), b"Anfang")
+
+    def test_obergrenze_beendet_auch_einen_haengenden_player(self):
+        pid = self.tmp / "player.pid"
+        a = self._player("a", spieler=f'echo $$ > "{pid}"; exec sleep 30')
+        a.stdin.write(b"PCM")
+        a.stdin.close()  # der Player liest nicht: Er hängt, auch wenn kein Ton mehr kommt
+        frist = time.monotonic() + 5
+        while not (pid.exists() and pid.read_text().strip()) and time.monotonic() < frist:
+            time.sleep(0.05)
+        spieler = int(pid.read_text())
+        self.assertFalse(self.c._warten(a, 0.3, gnade=2))
+        frist = time.monotonic() + 3
+        while time.monotonic() < frist:
+            try:
+                os.kill(spieler, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(spieler, 9)
+            self.fail("der Player lebt nach der Obergrenze noch")
+
+    def test_liest_der_halter_eine_datei_schreibt_er_nicht_mit(self):
+        # „Nochmal“: Ein Stopp mittendrin soll die letzte Antwort nicht kürzen
+        self.sperre.parent.mkdir(parents=True)
+        (self.sperre.parent / "letzte.pcm").write_bytes(b"ganze Antwort")
+        quelle = self.tmp / "quelle.pcm"
+        quelle.write_bytes(b"Anfang")
+        with open(quelle, "rb") as eingabe:
+            lauf = subprocess.run([sys.executable, "-c", self.c.SPERRE_PY, str(self.sperre),
+                                   "sh", "-c", "cat > /dev/null"], stdin=eingabe, timeout=10)
+        self.assertEqual(lauf.returncode, 0)
+        self.assertEqual((self.sperre.parent / "letzte.pcm").read_bytes(), b"ganze Antwort")
+        self.assertEqual(sorted(p.name for p in self.sperre.parent.iterdir()),
+                         ["letzte.pcm", "player.lock"])
 
     def _warten_auf_start(self, name: str) -> None:
         frist = time.monotonic() + 5
@@ -817,6 +930,77 @@ class SperreAmPlayer(unittest.TestCase):
                                   env={"PATH": f"{bin_}:/usr/bin:/bin"}, capture_output=True,
                                   text=True, timeout=10)
             self.assertEqual(lauf.stdout.strip(), "nein" if name == "ohne" else "ja", name)
+
+
+class Tastenkuerzel(unittest.TestCase):
+    """taste-stopp und nochmal auf dem Gerät, das spielt; HOME im Testordner, dort liegen
+    player.lock und letzte.pcm."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="taste"))
+        self.ordner = self.tmp / ".cache" / "hoerbuch-generator"
+        self.ordner.mkdir(parents=True)
+        self.protokoll = self.tmp / "aufruf.txt"
+        (self.tmp / "sprechen.sh").write_text(f'printf "%s\\n" "$*" >> "{self.protokoll}"\n',
+                                              encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _lauf(self, befehl: str, env: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(SKRIPT), befehl], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=30,
+                              env={"HOME": str(self.tmp), "PATH": "/usr/bin:/bin",
+                                   "HOERBUCH_GENERATOR": str(self.tmp), **(env or {})})
+
+    def test_nochmal_spielt_die_letzte_antwort_unter_der_sperre(self):
+        (self.ordner / "letzte.pcm").write_bytes(b"PCM-letzte")
+        gespielt = self.tmp / "gespielt.pcm"
+        lauf = self._lauf("nochmal", {"SPRECHEN_PLAYER": f"sh -c 'cat > {gespielt}'"})
+        self.assertEqual(lauf.returncode, 0, lauf.stderr)
+        frist = time.monotonic() + 10
+        while (gespielt.read_bytes() if gespielt.exists() else b"") != b"PCM-letzte":
+            if time.monotonic() > frist:
+                self.fail("nochmal spielte nichts")
+            time.sleep(0.05)
+        # Der Halter hat die Sperre genommen: Seine PID steht in der Datei
+        frist = time.monotonic() + 5
+        while not (self.ordner / "player.lock").read_text().strip() and time.monotonic() < frist:
+            time.sleep(0.05)
+        self.assertRegex((self.ordner / "player.lock").read_text(), r"^\d+ \d+$")
+
+    def test_nochmal_ohne_antwort(self):
+        lauf = self._lauf("nochmal", {"SPRECHEN_PLAYER": "cat"})
+        self.assertEqual(lauf.returncode, 1)
+        self.assertIn("Noch keine Antwort", lauf.stderr)
+
+    def test_stopp_trifft_den_halter_und_den_dienst_hier(self):
+        import claude_sprechen
+        halter = subprocess.Popen([sys.executable, "-c", claude_sprechen.SPERRE_PY,
+                                   str(self.ordner / "player.lock"), "sleep", "30"],
+                                  stdin=subprocess.PIPE)
+        try:
+            halter.stdin.write(b"PCM")
+            halter.stdin.flush()
+            frist = time.monotonic() + 5
+            while (not (self.ordner / "player.lock").exists()
+                   or not (self.ordner / "player.lock").read_text().strip()):
+                if time.monotonic() > frist:
+                    self.fail("der Halter nahm die Sperre nicht")
+                time.sleep(0.05)
+            # Ohne .venv läuft hier kein Dienst: kein Aufruf von sprechen.sh
+            self.assertEqual(self._lauf("taste-stopp").returncode, 0)
+            self.assertEqual(halter.wait(timeout=5), 143)
+            self.assertFalse(self.protokoll.exists())
+        finally:
+            halter.kill()
+            halter.wait()
+            halter.stdin.close()
+        (self.tmp / ".venv" / "bin").mkdir(parents=True)
+        (self.tmp / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+        self.assertEqual(self._lauf("taste-stopp").returncode, 0)
+        self.assertEqual(self.protokoll.read_text(encoding="utf-8"),
+                         "--stopp --quelle tastenkuerzel --sonst-aktuell\n")
 
 
 class Sitzungsbeginn(unittest.TestCase):

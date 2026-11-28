@@ -259,17 +259,20 @@ verzögert die Antwort um höchstens sechs Sekunden.
 | Claude Code auf einem Server ohne Ton, ein Mac rechnet | `SPRECHEN_ENTFERNT=<MAC>` und `SPRECHEN_GERAETE='macbook <MAC>'` |
 
 Auf dem gewählten Gerät spielt `paplay`, unter macOS `ffmpeg` aus Homebrew über AudioToolbox
-(sonst `ffplay`), aufgerufen über ssh; ein Repo-Klon ist dort nicht nötig. Fällt die Wahl auf
-`hier` und rechnet dieses Gerät selbst, spielt der Dienst wie ohne Gerätewahl. Die Wahl steht
-mit den gemessenen Zeiten in `wiedergabe.log` (Ordner wie oben). Ein Stoppwort der eigenen
-Sitzung bricht die Wiedergabe auch auf dem anderen Gerät ab; was der Player dort schon
-gepuffert hat, klingt noch aus, bei `ffmpeg` unter macOS rund drei Sekunden, bei `ffplay` rund
-fünf (gemessen am 27.11.2026).
+(sonst `ffplay`), aufgerufen über ssh; ein Repo-Klon ist dort nur für die Tastenkürzel (unten)
+nötig. Fällt die Wahl auf `hier` und rechnet dieses Gerät selbst, spielt der Dienst wie ohne
+Gerätewahl. Die Wahl steht mit den gemessenen Zeiten in `wiedergabe.log` (Ordner wie oben). Ein
+Stoppwort der eigenen Sitzung bricht die Wiedergabe auch auf dem anderen Gerät ab. Ohne Sperre
+(unten) klingt dort noch aus, was der Player schon gepuffert hat, bei `ffmpeg` unter macOS rund
+drei Sekunden, bei `ffplay` rund fünf (gemessen am 27.11.2026). Mit Sperre beendet der Halter
+den Player, sobald die Verbindung fort ist.
 
 **Mehrere Rechner, ein Gerät:** Landen Antworten von zwei Rechnern auf demselben Gerät, etwa vom
 Server und vom Mac auf dem Notebook, spielt das Gerät sie nacheinander. Der Player dort nimmt eine
 Sperre (`~/.cache/hoerbuch-generator/player.lock`), sobald der erste Ton ankommt, und gibt sie
-mit seinem Ende frei. Ohne die Sperre klangen die Antworten übereinander: Der Mac rechnet sie
+mit seinem Ende frei. Genauer hält ein kleiner Python-Prozess die Sperre, startet den Player als
+Kind, reicht ihm den Ton weiter und schreibt ihn für das Tastenkürzel „Nochmal“ mit (unten).
+Ohne die Sperre klangen die Antworten übereinander: Der Mac rechnet sie
 zwar nacheinander, aber die Puffer von ssh fassen bis zu 40 Sekunden Ton. Der Player des
 Fernbetriebs auf dem Gerät selbst nimmt dieselbe Sperre. Die Sperre braucht `python3` auf dem
 Gerät; `pruefen` zeigt „mit Sperre“ oder „ohne Sperre“, ohne `python3` spielt das Gerät wie
@@ -282,6 +285,35 @@ Dienst die Sperre nicht, beide können sich dort überlagern.
 
 Für das Stoppwort fragt der Prompt-Hook dieselben Geräte. Steht `SPRECHEN_GERAETE` wie im
 Beispiel oben nur vor dem Stop-Hook, liest er den Wert dort aus `settings.json`.
+
+## Tastenkürzel: Stopp und Nochmal
+
+Zwei Befehle für Tastenkürzel auf dem Gerät, das spielt. Sie lesen kein stdin und brauchen nur
+`python3` (ab 3.9) und einen Klon dieses Repos auf dem Gerät:
+
+| Befehl | Wirkung |
+|---|---|
+| `python3 <REPO>/integrationen/claude-code/claude_sprechen.py taste-stopp` | beendet, was auf diesem Gerät klingt: den Player, der die Sperre hält, und, wo der Dienst läuft, dessen eigene Wiedergabe. Wartende Antworten bleiben |
+| `python3 <REPO>/integrationen/claude-code/claude_sprechen.py nochmal` | spielt die letzte Antwort, die dieses Gerät gespielt hat, noch einmal, unter derselben Sperre; kehrt sofort zurück |
+
+Für „Nochmal“ schreibt der Player unter der Sperre den Ton mit
+(`~/.cache/hoerbuch-generator/letzte.pcm`, rund 50 KB je Sekunde), ebenso der Dienst, was er
+selbst abspielt. Eine abgebrochene Antwort liegt dort nur bis zur Stelle des Abbruchs; ein
+abgebrochenes „Nochmal“ kürzt sie nicht. Ohne `python3` auf dem Gerät gibt es weder Sperre noch
+Mitschnitt. Anders als ein Stoppwort muss das Kürzel nicht erst als Eingabe in einem Fenster
+abgeschickt werden. Die Grenze von oben gilt auch hier: Auf dem Mac, der rechnet, kann sich
+„Nochmal“ mit einer Antwort überlagern, die der Dienst dort selbst spielt.
+
+**macOS, Kurzbefehle-App:** je Befehl einen Kurzbefehl mit der Aktion „Shell-Skript ausführen“
+anlegen, den Befehl oben eintragen und in den Details des Kurzbefehls ein Tastenkürzel vergeben.
+Als `python3` den aus Homebrew (`/opt/homebrew/bin/python3`) oder `/usr/bin/python3` eintragen;
+Letzteres nur mit installierten Command Line Tools, sonst öffnet jeder Tastendruck den Dialog
+zur Installation. In den Einstellungen der App unter
+„Erweitert“ muss das Ausführen von Skripten erlaubt sein. `nochmal` ergänzt Homebrew selbst im
+PATH, weil die App ohne startet. Die Bezeichnungen in der Oberfläche können je nach macOS-Version
+abweichen.
+
+**Linux mit GNOME:** Einstellungen, Tastatur, „Eigene Tastenkürzel“, mit demselben Befehl.
 
 ## Am Handy: Datei statt Ton (`/sprechen datei`)
 

@@ -35,7 +35,8 @@ Aufbau:
       Geraet, das den Ton selbst abspielt; Warteschlange und Stopp je Quelle gelten weiter.
       Mit --datei legt der Aufruf den Ton als MP3 (ohne ffmpeg als WAV) in DATEI_ORDNER ab
       und gibt den Pfad aus, fuer Oberflaechen, die eine Audiodatei in der Antwort abspielen
-      (etwa T3 Code am Handy).
+      (etwa T3 Code am Handy). Was der Dienst selbst abspielt, legt er als PCM in LETZTE_PCM
+      ab, auch abgebrochen; das Tastenkürzel „Nochmal“ des Hook-Skripts spielt es erneut.
     - Metal steht in einer macOS-Sandbox nicht zur Verfuegung. Wer den Dienst aus einer
       Sandbox heraus startet (etwa aus einem Agenten-Werkzeug), bekommt eine Fehlermeldung
       statt Sprache; Hooks oder ein Terminal starten ihn ausserhalb.
@@ -82,6 +83,7 @@ DEFAULT_LOG = Path.home() / "Library" / "Logs" / "hoerbuch-generator" / "sprechd
 DEFAULT_TEMPO = 1.20  # wie vorlesen.sh: rund 150 Woerter pro Minute
 LEERLAUF = 20 * 60  # Sekunden ohne Auftrag, danach beendet sich der Dienst
 START_WARTEN = 15.0  # Sekunden, die ein Aufruf auf den frisch gestarteten Dienst wartet
+BEENDEN_WARTEN = 10.0  # Sekunden, die --beenden auf das Ende des Dienstes wartet
 MIN_SATZ = 40  # kuerzere Saetze werden mit dem naechsten zusammengefasst
 PAUSE_SATZ = 0.25
 PAUSE_ABSATZ = 0.6
@@ -94,6 +96,9 @@ LIEFERN_TIMEOUT = 120.0  # Sekunden, die sendall bei --liefern auf einen lesende
 # --datei: fester Ordner, damit ein Aufruf als Ausnahme einer Sandbox nirgendwo sonst schreibt
 DATEI_ORDNER = Path.home() / "Library" / "Caches" / "hoerbuch-generator" / "dateien"
 DATEI_ALTER = 7 * 24 * 3600  # Sekunden; ältere Dateien löscht der nächste Aufruf
+# Ton der letzten eigenen Ausgabe, für „Nochmal“ (claude_sprechen.py nochmal). Derselbe Ort, an
+# dem ein Player unter der Sperre des Hook-Skripts mitschreibt, deshalb ~/.cache
+LETZTE_PCM = Path.home() / ".cache" / "hoerbuch-generator" / "letzte.pcm"
 
 log = logging.getLogger("sprechdienst")
 
@@ -530,6 +535,7 @@ class Dienst:
 
     def _sprechen(self, model, auftrag: Auftrag, ref_audio, ref_text: str, attenuate) -> None:
         plan = stuecke(auftrag.text)
+        ton: list[bytes] = []  # was der Lautsprecher bekommt, für LETZTE_PCM
         erster_ton = None
         rechnen = atem = audio_s = 0.0
         ausgelassen = 0
@@ -567,6 +573,7 @@ class Dienst:
                     if auftrag.vorbei(self.runde):
                         break
                     self.player.queue_audio(audio)
+                ton.append(pcm(audio))
             audio_s += len(audio) / qwen.SAMPLE_RATE
             if erster_ton is None:
                 erster_ton = time.monotonic() - auftrag.eingang
@@ -582,6 +589,7 @@ class Dienst:
                 self.player.wait_for_drain()
             with self._player_sperre:
                 self.player.stop_stream()
+            letzte_schreiben(b"".join(ton))
         auftrag.ergebnis = self.letzter = {
             "stuecke": len(plan), "ausgelassen": ausgelassen,
             "erster_ton_s": round(erster_ton or 0.0, 2),
@@ -594,6 +602,19 @@ class Dienst:
 def pcm(audio: np.ndarray) -> bytes:
     """float32 im Bereich -1 bis 1 als 16-Bit-PCM, little endian, wie es Player erwarten."""
     return (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+def letzte_schreiben(daten: bytes) -> None:
+    """Ton der letzten eigenen Ausgabe nach LETZTE_PCM, auch abgebrochen; ohne Ton nichts."""
+    if not daten:
+        return
+    neu = LETZTE_PCM.with_name(f"{LETZTE_PCM.name}.{os.getpid()}")
+    try:
+        LETZTE_PCM.parent.mkdir(parents=True, exist_ok=True)
+        neu.write_bytes(daten)
+        os.replace(neu, LETZTE_PCM)
+    except OSError as e:
+        log.warning("Letzte Ausgabe nicht gespeichert: %s", e)
 
 
 def _pcm_senden(conn: socket.socket, audio: np.ndarray) -> bool:
@@ -627,6 +648,27 @@ def _erreichbar(pfad: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+def ende_abwarten(pfad: Path, frist: float = BEENDEN_WARTEN) -> bool:
+    """Nach "beenden": warten, bis der Dienst seine Sperre freigibt; True, sobald sie frei
+    ist. Er nimmt nach ende.set() bis zu einer Sekunde lang noch Verbindungen an und schliesst
+    sie ohne Antwort, ein Aufruf direkt danach meldete sonst "unbekannter Fehler". Den Socket
+    entfernt er vor der Sperre, auf ihn allein zu warten genuegte nicht: Ein neuer Dienst in
+    dieser Luecke fand die Sperre noch belegt und endete."""
+    ende = time.monotonic() + frist
+    while True:
+        try:
+            with open(pfad.with_suffix(".lock"), "a") as sperre:
+                fcntl.flock(sperre, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            pass
+        except OSError:
+            return not pfad.exists()
+        if time.monotonic() > ende:
+            return False
+        time.sleep(0.1)
 
 
 def senden(anfrage: dict, timeout: float | None = 10.0) -> dict:
@@ -799,6 +841,9 @@ def main() -> int:
         elif sonst:
             # Ein Dienst, der vor dem Update startete, kennt das Feld nicht
             print(antwort.get("getroffen", "unbekannt"))
+        elif args.beenden and antwort.get("ok") and not ende_abwarten(socket_pfad()):
+            log.error("Dienst nach %g s noch nicht beendet", BEENDEN_WARTEN)
+            return 1
         return 0 if antwort.get("ok") else 1
 
     if args.liefern + args.warten + args.datei > 1:

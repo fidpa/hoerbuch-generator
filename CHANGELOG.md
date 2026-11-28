@@ -6,6 +6,35 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.13.0] - 2026-11-28: Stopp und Nochmal auf Tastendruck
+
+### Hinzugefügt
+
+- **Tastenkürzel für Stopp und Nochmal:** `claude_sprechen.py taste-stopp` beendet, was auf dem
+  Gerät klingt, sofort und ohne Eingabe in einem Fenster: den Player, der dort die Sperre hält,
+  und, wo der Dienst läuft, dessen eigene Wiedergabe. Wartende Antworten bleiben.
+  `claude_sprechen.py nochmal` spielt die letzte Antwort des Geräts noch einmal. Dafür schreibt
+  der Player unter der Sperre den Ton nach `~/.cache/hoerbuch-generator/letzte.pcm` mit, der
+  Dienst ebenso, was er selbst abspielt. Die README beschreibt die Kurzbefehle-App unter macOS
+  und eigene Tastenkürzel unter GNOME.
+
+### Geändert
+
+- **Der Player unter der Sperre ist ein Kind des Halters** statt ihn per `exec` zu ersetzen:
+  Der Halter reicht den Ton weiter und schreibt ihn mit, außer bei „Nochmal“, damit ein Stopp
+  mittendrin die letzte Antwort nicht kürzt. Ein Stopp an den Halter beendet auch den Player,
+  ebenso das Ende seines Elternprozesses: Fällt beim Stoppwort der eigenen Sitzung ssh fort,
+  verstummt der Player dort, statt seine Puffer auszuspielen. An der Obergrenze einer Wiedergabe
+  bekommt der Halter erst SIGTERM und zwei Sekunden Zeit, damit kein hängender Player ohne
+  Sperre stehen bleibt.
+
+### Behoben
+
+- **`sprechen.sh --beenden` wartet auf das Ende des Dienstes:** Der Dienst nahm nach dem Befehl
+  bis zu einer Sekunde lang noch Verbindungen an und schloss sie ohne Antwort, ein Aufruf direkt
+  danach meldete „unbekannter Fehler“. Jetzt kehrt `--beenden` erst zurück, wenn der Dienst seine
+  Sperre freigegeben hat, höchstens nach zehn Sekunden (sonst Exit 1).
+
 ## [0.12.0] - 2026-11-28: Ein Satz statt Stille, und der Fork behält den Modus
 
 ### Hinzugefügt
@@ -309,6 +338,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.13.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.13.0
 [0.12.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.12.0
 [0.11.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.11.0
 [0.10.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.10.0

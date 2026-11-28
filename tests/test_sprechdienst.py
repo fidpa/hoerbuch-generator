@@ -242,12 +242,40 @@ class PlayerNurUnterSperre(unittest.TestCase):
         kurz = np.zeros(sprechdienst.qwen.SAMPLE_RATE // 5, np.float32)  # unter 1,5 s Puffer
         auftrag = sprechdienst.Auftrag(text="Ja.", stimme="erzaehler", tempo=1.0,
                                        mit_atem=False, runde=dienst.runde)
-        with unittest.mock.patch.object(sprechdienst.qwen, "synthesize_chunk",
-                                        return_value=kurz):
+        with tempfile.TemporaryDirectory() as ordner, \
+                unittest.mock.patch.object(sprechdienst, "LETZTE_PCM", Path(ordner) / "l.pcm"), \
+                unittest.mock.patch.object(sprechdienst.qwen, "synthesize_chunk",
+                                           return_value=kurz):
             dienst._sprechen(None, auftrag, None, "", None)
+            # Für „Nochmal“: der Ton samt Pause, wie ihn der Lautsprecher bekam
+            self.assertGreater((Path(ordner) / "l.pcm").stat().st_size, len(kurz) * 2)
         self.assertEqual(ohne_sperre, [])
         self.assertFalse(auftrag.ergebnis["abgebrochen"])
         self.assertGreater(auftrag.ergebnis["audio_s"], 0)
+
+
+@unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
+class LetzteAusgabe(unittest.TestCase):
+    def test_schreibt_ersetzend_und_nichts_ohne_ton(self):
+        import sprechdienst
+        with tempfile.TemporaryDirectory() as ordner:
+            ziel = Path(ordner) / "unter" / "letzte.pcm"
+            with unittest.mock.patch.object(sprechdienst, "LETZTE_PCM", ziel):
+                sprechdienst.letzte_schreiben(b"")
+                self.assertFalse(ziel.exists())
+                sprechdienst.letzte_schreiben(b"\x01\x00")
+                sprechdienst.letzte_schreiben(b"\x02\x00\x03\x00")
+            self.assertEqual(ziel.read_bytes(), b"\x02\x00\x03\x00")
+            self.assertEqual([p.name for p in ziel.parent.iterdir()], ["letzte.pcm"])
+
+    def test_ohne_schreibrecht_nur_eine_warnung(self):
+        import sprechdienst
+        with tempfile.TemporaryDirectory() as ordner:
+            (Path(ordner) / "datei").write_text("", encoding="utf-8")
+            ziel = Path(ordner) / "datei" / "letzte.pcm"
+            with unittest.mock.patch.object(sprechdienst, "LETZTE_PCM", ziel), \
+                    self.assertLogs("sprechdienst", "WARNING"):
+                sprechdienst.letzte_schreiben(b"\x01\x00")
 
 
 @unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
@@ -591,9 +619,14 @@ class Protokoll(unittest.TestCase):
         self.assertTrue(self.s._erreichbar(self.pfad))
 
     def test_beenden_raeumt_den_socket_weg(self):
+        # Solange der Dienst läuft, hält er die Sperre
+        self.assertFalse(self.s.ende_abwarten(self.pfad, frist=0.3))
         self.assertTrue(self.s.senden({"cmd": "beenden"})["ok"])
-        self.thread.join(timeout=5)
+        # --beenden kehrt erst zurück, wenn ein neuer Dienst starten kann: Socket weg und
+        # Sperre frei, ohne auf den Thread zu warten
+        self.assertTrue(self.s.ende_abwarten(self.pfad, frist=5))
         self.assertFalse(self.pfad.exists())
+        self.thread.join(timeout=5)
 
 
 if __name__ == "__main__":
