@@ -6,6 +6,19 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.16.1] - 2026-11-28: Neuer Name Stimmwerk
+
+### Geändert
+
+- **Das Projekt heißt jetzt Stimmwerk**, das Repo auf GitHub `fidpa/stimmwerk`. Aus denselben
+  Stimmen entstehen inzwischen Hörbücher und gesprochene Antworten für Claude Code, der alte Name
+  nannte nur das Hörbuch. GitHub leitet die alten Adressen weiter, ein bestehender Klon zieht
+  weiter ohne Änderung. README, Lizenzdatei, `/sprechen` und der Vorspann des SessionStart-Hooks
+  nennen den neuen Namen. Ein Gesprächsmodus, der vor dem Update angeschaltet wurde, gilt weiter.
+  Die Ordner für Einstellungen, Zwischenspeicher und Protokolle heißen weiter
+  `hoerbuch-generator`, damit eine bestehende Einrichtung ohne Umzug weiterläuft. Auch der Ordner
+  eines bestehenden Klons darf so heißen bleiben.
+
 ## [0.16.0] - 2026-11-28: Leerlaufzeit des Sprechdienstes einstellbar
 
 ### Hinzugefügt
@@ -394,6 +407,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.16.1]: https://github.com/fidpa/stimmwerk/releases/tag/v0.16.1
 [0.16.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.16.0
 [0.15.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.15.0
 [0.14.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.14.0

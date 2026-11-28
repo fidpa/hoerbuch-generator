@@ -1,6 +1,6 @@
 # Fremde Bestandteile und ihre Lizenzen
 
-Der Generator selbst steht unter der GNU Affero General Public License 3.0 oder neuer
+Stimmwerk selbst steht unter der GNU Affero General Public License 3.0 oder neuer
 (siehe [LICENSE](LICENSE)). Diese Datei nennt, was von anderen stammt, und ob es im Repo
 liegt oder erst bei der Einrichtung geholt wird.
 
@@ -77,4 +77,4 @@ Paketdaten der getesteten Versionen (24.10.2026, sounddevice 26.11.2026).
 ### Programme (über Homebrew)
 
 `ffmpeg` (LGPL oder GPL, je nach Build), `pandoc` (GPL-2.0 oder neuer), optional
-`tesseract` (Apache 2.0). Der Generator ruft sie als eigene Programme auf.
+`tesseract` (Apache 2.0). Stimmwerk ruft sie als eigene Programme auf.

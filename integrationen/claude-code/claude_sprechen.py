@@ -98,7 +98,7 @@ COMMAND = Path(__file__).resolve().parent / "sprechen.md"
 EINSCHALTEN = "## Sonst: Modus einschalten"
 BESTAETIGEN = "Bestätige das Einschalten"
 START_KENNUNG = "Der Gesprächsmodus ist in dieser Sitzung von Anfang an eingeschaltet"
-VORSPANN = (START_KENNUNG + " (SessionStart-Hook des Hörbuch-Generators), ohne Bestätigung. "
+VORSPANN = (START_KENNUNG + " (SessionStart-Hook von Stimmwerk), ohne Bestätigung. "
             "/sprechen aus schaltet ihn ab, /sprechen datei auf Audiodateien um. "
             "Bis dahin gilt:\n\n")
 # Nach dem Kompaktieren im Datei-Modus: der Abschnitt „Bei datei“ statt der Regeln für Ton.
@@ -109,7 +109,7 @@ DATEI_BESTAETIGEN = "Bestätige mit genau dieser Antwort"
 KNAPP = "### Knapp"
 WAS_SONST = "### Was sonst gilt"
 VORSPANN_DATEI = ("Der Gesprächsmodus dieser Sitzung steht auf Datei (/sprechen datei, vom "
-                  "Hook des Hörbuch-Generators festgehalten), ohne Bestätigung. /sprechen "
+                  "Hook von Stimmwerk festgehalten), ohne Bestätigung. /sprechen "
                   "schaltet auf Ton, /sprechen aus ab. Bis dahin gilt:\n\n")
 # Der Prompt-Hook bekommt die Eingabe so, wie sie getippt wurde (Hook-Doku, UserPromptSubmit)
 SPRECHEN_EINGABE = re.compile(r"\s*/sprechen(?:\s+(.*))?\Z", re.DOTALL)

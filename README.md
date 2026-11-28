@@ -1,23 +1,25 @@
-# Hörbuch-Generator
+# Stimmwerk
 
-[![Release](https://img.shields.io/github/v/release/fidpa/hoerbuch-generator?style=flat-square)](https://github.com/fidpa/hoerbuch-generator/releases)
-[![Lint](https://github.com/fidpa/hoerbuch-generator/actions/workflows/lint.yml/badge.svg)](https://github.com/fidpa/hoerbuch-generator/actions/workflows/lint.yml)
+[![Release](https://img.shields.io/github/v/release/fidpa/stimmwerk?style=flat-square)](https://github.com/fidpa/stimmwerk/releases)
+[![Lint](https://github.com/fidpa/stimmwerk/actions/workflows/lint.yml/badge.svg)](https://github.com/fidpa/stimmwerk/actions/workflows/lint.yml)
 ![Lizenz: AGPL-3.0](https://img.shields.io/badge/Lizenz-AGPL--3.0-blue.svg?style=flat-square)
 ![Plattform](https://img.shields.io/badge/Plattform-Apple%20Silicon%20%7C%20macOS-black?style=flat-square&logo=apple)
 ![Python](https://img.shields.io/badge/Python-3.10%20bis%203.12-blue?style=flat-square&logo=python&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Alpha-orange?style=flat-square)
 
-Macht aus deutschen Texten ein Hörbuch als MP3: Bücher, Artikel, Abschriften von Vorträgen, Skripte, eigene Notizen. Alles läuft lokal auf dem Mac. Kein Text verlässt den Rechner, es gibt kein Konto und keine Kosten.
+Stimmwerk spricht deutsche Texte mit natürlichen Stimmen, lokal auf dem Mac mit Apple Silicon und über Qwen3-TTS. Daraus entstehen Hörbücher als MP3 aus Büchern, Artikeln, Abschriften von Vorträgen, Skripten und eigenen Notizen, und im Gesprächsmodus gesprochene Antworten von Claude Code. Kein Text verlässt den Rechner, es gibt kein Konto und keine Kosten.
 
-> **Sprachhinweis:** Diese Dokumentation ist durchgehend deutsch, weil der Generator für deutsche Texte gebaut ist und sich an ein deutschsprachiges Publikum richtet.
+> **Sprachhinweis:** Diese Dokumentation ist durchgehend deutsch, weil Stimmwerk für deutsche Texte gebaut ist und sich an ein deutschsprachiges Publikum richtet.
+
+> **Früherer Name:** Bis v0.16.0 hieß das Projekt Hörbuch-Generator. Die Ordner für Einstellungen, Zwischenspeicher und Protokolle heißen weiter `hoerbuch-generator`, etwa `~/.config/hoerbuch-generator`. So läuft eine bestehende Einrichtung ohne Umzug weiter.
 
 > **Hinweis an Claude:** Lies diese Datei ganz, bevor du etwas startest, und folge dem Abschnitt [Anleitung für Claude](#anleitung-für-claude) am Ende. Alles, was du über Entscheidungen und Fallstricke wissen musst, steht in dieser Datei.
 
-## Warum es ihn gibt
+## Warum es Stimmwerk gibt
 
 Wer einen längeren Text hören statt lesen will, hat zwei schlechte Wege. Die Cloud-Dienste klingen gut, aber der Text geht an einen fremden Server. Schnelle lokale Sprachausgaben wie Piper klangen im Test hölzern und sprachen englische Fachbegriffe deutsch aus. Und ein PDF direkt vorzulesen scheitert an Fußnoten, Seitenzahlen und Abkürzungen, gleich mit welcher Stimme.
 
-Der Generator verbindet eine natürliche Stimme, die vollständig auf dem Mac läuft, mit einer Hörfassung für deutsche Texte. Die Hörfassung macht aus „z. B.“ „zum Beispiel“ und aus „am 3. Oktober“ „am dritten Oktober“ und lässt weg, was beim Hören stört.
+Stimmwerk verbindet eine natürliche Stimme, die vollständig auf dem Mac läuft, mit einer Hörfassung für deutsche Texte. Die Hörfassung macht aus „z. B.“ „zum Beispiel“ und aus „am 3. Oktober“ „am dritten Oktober“ und lässt weg, was beim Hören stört.
 
 ## Funktionen
 
@@ -38,9 +40,9 @@ Der Generator verbindet eine natürliche Stimme, die vollständig auf dem Mac l�
 - **Die Hörfassung ist an gegliederten Sachtexten erprobt.** Hat das PDF eine nummerierte Gliederung („1 Einleitung“), beginnt die Hörfassung beim ersten Kapitel und lässt vom Deckblatt nur die Titelzeilen stehen. Bei anderen PDFs, etwa Romanen, die Hörfassung besonders genau ansehen.
 - **Gescannte PDFs** ohne Textebene brauchen eine Texterkennung (`brew install tesseract tesseract-lang`). Danach erkennt `pdf_zu_text.py` Seiten ohne Text selbst, auf Deutsch. Mit echten Scans ist das nicht getestet.
 
-### Wofür der Generator nicht gedacht ist
+### Wofür Stimmwerk nicht gedacht ist
 
-- **Hörbücher zum Verkauf oder Veröffentlichen fremder Texte.** Der Generator prüft keine Rechte. Wer ein Hörbuch weitergibt, braucht die Rechte am Text.
+- **Hörbücher zum Verkauf oder Veröffentlichen fremder Texte.** Stimmwerk prüft keine Rechte. Wer ein Hörbuch weitergibt, braucht die Rechte am Text.
 - **Fremde Stimmen nachbilden.** Eine Stimme aus der Aufnahme einer anderen Person nur mit deren Erlaubnis anlegen.
 - **Belletristik mit verteilten Rollen.** Eine Stimme liest den ganzen Text, ohne Rollen und ohne Kapitelmarken in der MP3.
 
@@ -56,8 +58,8 @@ Der Generator verbindet eine natürliche Stimme, die vollständig auf dem Mac l�
 ## Schnellstart
 
 ```bash
-git clone https://github.com/fidpa/hoerbuch-generator
-cd hoerbuch-generator
+git clone https://github.com/fidpa/stimmwerk
+cd stimmwerk
 ./einrichten.sh                                  # einmalig, einige Minuten
 ./vorlesen.sh text.txt                           # -> text.mp3 daneben
 ```
@@ -68,7 +70,7 @@ Ohne Git geht es auch: auf GitHub über „Code“ und „Download ZIP“ herunt
 
 Den Ordner ablegen, wohin du willst. Dann Claude Code öffnen, egal in welchem Ordner, und schreiben:
 
-**„Im Ordner `<pfad>/hoerbuch-generator` liegt ein Hörbuch-Generator. Lies dort die README.md und richte ihn für mich ein.“**
+**„Im Ordner `<pfad>/stimmwerk` liegt Stimmwerk, eine deutsche Sprachausgabe für Hörbücher. Lies dort die README.md und richte ihn für mich ein.“**
 
 Claude prüft deinen Mac, richtet alles ein, fragt nach deinen Texten und macht zuerst eine Hörprobe. Erst wenn sie dir gefällt, wird der ganze Text vertont.
 
@@ -143,7 +145,7 @@ Der erste Aufruf startet im Hintergrund einen Dienst (`werkzeuge/sprechdienst.py
 **Für ein anderes Gerät rechnen:** Mit `--liefern` spielt der Dienst nichts ab, sondern schreibt den Ton Satz für Satz als 16-Bit-PCM (24 kHz, mono) nach stdout. Über ssh aufgerufen, rechnet der Mac, und ein Player auf dem anderen Gerät spielt ab, auch unter Linux ohne MLX:
 
 ```bash
-echo "Das ist ein Satz vom Mac." | ssh mac '~/hoerbuch-generator/sprechen.sh --liefern -' | aplay -q -t raw -f S16_LE -r 24000 -c 1
+echo "Das ist ein Satz vom Mac." | ssh mac '~/stimmwerk/sprechen.sh --liefern -' | aplay -q -t raw -f S16_LE -r 24000 -c 1
 ```
 
 **Als Datei:** Mit `--datei` legt der Dienst die Sprache als MP3 unter `~/Library/Caches/hoerbuch-generator/dateien/` ab und gibt den Pfad aus, etwa zum Einbetten in eine Chat-Oberfläche. Dateien älter als sieben Tage löscht der nächste Aufruf.
@@ -231,7 +233,7 @@ Für den Sprechdienst prüfen die Tests alles außer der Sprache selbst: wie der
 
 | Werkzeug | Stärke | Schwäche für deutsche Texte |
 |----------|--------|---------------------------------|
-| Hörbuch-Generator (dieses Repo) | natürliche Stimme, Hörfassung für Abkürzungen, Fußnoten und Tabellen | nur Apple Silicon, etwas gleichförmig, langsamer als Echtzeit-Stimmen |
+| Stimmwerk (dieses Repo) | natürliche Stimme, Hörfassung für Abkürzungen, Fußnoten und Tabellen | nur Apple Silicon, etwas gleichförmig, langsamer als Echtzeit-Stimmen |
 | macOS-Sprachausgabe (`say`, Stimme Anna) | eingebaut, sofort da, sehr schnell | keine Aufbereitung des Textes; Klang hier nicht verglichen |
 | [Piper](https://github.com/rhasspy/piper) | sehr schnell, läuft auf fast jedem Rechner | im Test hölzern; englische Wörter nur mit Lautschrift brauchbar |
 | [ebook2audiobook](https://github.com/DrewThomasson/ebook2audiobook) | ganze E-Books mit Kapiteln, Stimmklon, plattformübergreifend | keine Aufbereitung deutscher Abkürzungen bekannt; hier nicht getestet |
@@ -261,14 +263,14 @@ Dieser Abschnitt richtet sich an Claude. Du kennst die Vorgeschichte dieses Ordn
 
 ### Wo du arbeitest
 
-- **Pfade immer vom Ordner des Generators aus** (im Folgenden `<ordner>`), nicht vom Arbeitsverzeichnis. `<ordner>/vorlesen.sh` findet Umgebung, Stimmen und Werkzeuge selbst.
+- **Pfade immer vom Ordner dieses Repos aus** (im Folgenden `<ordner>`), nicht vom Arbeitsverzeichnis. `<ordner>/vorlesen.sh` findet Umgebung, Stimmen und Werkzeuge selbst.
 - **Nichts außerhalb des Ordners ändern** außer den Text- und MP3-Dateien des Nutzers. Hörfassungen und MP3s entstehen neben der Eingabedatei. Existiert dort schon eine MP3 gleichen Namens, vorher fragen; `vorlesen.sh` überschreibt sie ohne Rückfrage. Während eines Laufs liegt neben der MP3 der Ordner `<name>.stuecke/`. Ihn nicht löschen, solange die MP3 fehlt: Er hält den Fortschritt.
-- **Die Dateien in `stimmen/` und `werkzeuge/` nicht verändern,** solange der Nutzer nicht ausdrücklich eine Änderung am Generator will.
+- **Die Dateien in `stimmen/` und `werkzeuge/` nicht verändern,** solange der Nutzer nicht ausdrücklich eine Änderung an Stimmwerk will.
 - **Ohne Befehlsausführung** (Chat im Browser) geht es nicht, weil die Vertonung auf dem Mac des Nutzers läuft. Dann die Befehle zum Kopieren geben.
 
 ### Zuerst prüfen und fragen
 
-**Nicht sofort einrichten oder vertonen.** Erkläre in zwei Sätzen, was der Generator tut, und prüfe dann selbst, statt zu fragen:
+**Nicht sofort einrichten oder vertonen.** Erkläre in zwei Sätzen, was Stimmwerk tut, und prüfe dann selbst, statt zu fragen:
 
 - `uname -m` muss `arm64` ergeben. Sonst sag deutlich, dass es auf diesem Rechner nicht läuft, und hör auf.
 - Freier Platz (`df -h ~`, mindestens 4 GB), `ffmpeg`, `uv` oder Python 3.10 bis 3.12, bei Bedarf `pandoc`. Fehlt etwas, den `brew install`-Befehl nennen und vor dem Installieren um Erlaubnis fragen.
@@ -295,9 +297,9 @@ Dann in einer Runde fragen, jeweils mit Empfehlung:
 
 Will der Nutzer Antworten gesprochen hören statt ein Hörbuch zu erzeugen, gilt die Anleitung in [integrationen/claude-code/README.md](integrationen/claude-code/README.md). Dabei:
 
-- **Die Hooks in `~/.claude/settings.json` liegen außerhalb dieses Ordners.** Den Eintrag erst zeigen und nur mit Zustimmung des Nutzers eintragen; bestehende Hooks bleiben stehen. Pfade absolut, mit dem Ordner des Generators.
+- **Die Hooks in `~/.claude/settings.json` liegen außerhalb dieses Ordners.** Den Eintrag erst zeigen und nur mit Zustimmung des Nutzers eintragen; bestehende Hooks bleiben stehen. Pfade absolut, mit dem Ordner dieses Repos.
 - **`sprechen.sh` nicht aus deinem eigenen Shell-Werkzeug starten,** wenn es in einer Sandbox läuft: Dort fehlen Metal und Unix-Sockets, und ein so gestarteter Dienst meldet nur Fehler. Den ersten Start übernimmt der Hook oder der Nutzer im Terminal (`<ordner>/sprechen.sh --warten "Probe."`). Lief der Dienst schon aus der Sandbox, beendet ihn `<ordner>/sprechen.sh --beenden` im Terminal.
-- **Nach einem Update des Generators** `<ordner>/sprechen.sh --beenden`; der nächste Auftrag lädt dann den neuen Stand.
+- **Nach einem Update** `<ordner>/sprechen.sh --beenden`; der nächste Auftrag lädt dann den neuen Stand.
 
 ### Meldungen und was zu tun ist
 

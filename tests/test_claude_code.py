@@ -29,7 +29,7 @@ from claude_sprechen import ansage, gesprochener_text  # noqa: E402
 # So steht der Kontext des SessionStart-Hooks im Transkript einer Sitzung
 START = {"type": "attachment", "attachment": {"type": "hook_additional_context", "content": [
     "Der Gesprächsmodus ist in dieser Sitzung von Anfang an eingeschaltet (SessionStart-Hook "
-    "des Hörbuch-Generators) …"]}}
+    "von Stimmwerk) …"]}}
 
 
 def _ps_geht() -> bool:

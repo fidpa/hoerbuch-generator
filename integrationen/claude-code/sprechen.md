@@ -60,7 +60,7 @@ Für den Rest dieser Sitzung endet **jede** Antwort mit genau einer Sprechmarke 
 <!-- sprechen: Gesprochene Fassung in ganzen Sätzen. -->
 ```
 
-Der Stop-Hook (`claude_sprechen.py` im Hörbuch-Generator) liest nur den Inhalt dieser Marke vor.
+Der Stop-Hook (`claude_sprechen.py` in Stimmwerk) liest nur den Inhalt dieser Marke vor.
 Die geschriebene Antwort davor bleibt, wie sie wäre: mit Tabellen, Code und Pfaden. Was zum
 Kopieren oder Nachlesen gebraucht wird, steht dort und nicht in der Marke.
 
@@ -125,4 +125,4 @@ Der Gesprächsmodus ist an.
 
 Voraussetzung sind die Hooks Stop und UserPromptSubmit in den Einstellungen; SessionStart und
 Notification sind optional.
-Einrichtung und Grenzen: `integrationen/claude-code/README.md` im Hörbuch-Generator.
+Einrichtung und Grenzen: `integrationen/claude-code/README.md` in Stimmwerk.
