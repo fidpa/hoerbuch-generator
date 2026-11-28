@@ -37,6 +37,8 @@ Aufbau:
       und gibt den Pfad aus, fuer Oberflaechen, die eine Audiodatei in der Antwort abspielen
       (etwa T3 Code am Handy). Was der Dienst selbst abspielt, legt er als PCM in LETZTE_PCM
       ab, auch abgebrochen; das Tastenkürzel „Nochmal“ des Hook-Skripts spielt es erneut.
+      Liegt daneben die Datei STUMM (/sprechen stumm des Hook-Skripts), spielt er nichts
+      selbst ab und beendet solche Aufträge vor dem nächsten Satz; --liefern bleibt.
     - Metal steht in einer macOS-Sandbox nicht zur Verfuegung. Wer den Dienst aus einer
       Sandbox heraus startet (etwa aus einem Agenten-Werkzeug), bekommt eine Fehlermeldung
       statt Sprache; Hooks oder ein Terminal starten ihn ausserhalb.
@@ -99,6 +101,10 @@ DATEI_ALTER = 7 * 24 * 3600  # Sekunden; ältere Dateien löscht der nächste Au
 # Ton der letzten eigenen Ausgabe, für „Nochmal“ (claude_sprechen.py nochmal). Derselbe Ort, an
 # dem ein Player unter der Sperre des Hook-Skripts mitschreibt, deshalb ~/.cache
 LETZTE_PCM = Path.home() / ".cache" / "hoerbuch-generator" / "letzte.pcm"
+# Stummschalter des Hook-Skripts (/sprechen stumm), im selben Ordner wie LETZTE_PCM: Solange
+# die Datei liegt, spielt der Dienst nichts selbst ab. Geliefert wird weiter, über den Ton
+# entscheidet dann das Gerät, das spielt
+STUMM = "stumm"
 
 log = logging.getLogger("sprechdienst")
 
@@ -540,6 +546,10 @@ class Dienst:
         rechnen = atem = audio_s = 0.0
         ausgelassen = 0
         for satz, absatzende in plan:
+            if auftrag.ziel is None and LETZTE_PCM.with_name(STUMM).exists():
+                # Auch für einen Auftrag, der nach dem Stopp des Stummschalters ankam
+                log.info("Stumm geschaltet, Auftrag ohne Ton beendet")
+                auftrag.abbruch.set()
             if auftrag.vorbei(self.runde):
                 break
             t = time.monotonic()

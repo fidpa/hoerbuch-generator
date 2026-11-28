@@ -119,7 +119,7 @@ class Hook(unittest.TestCase):
             lauf = subprocess.run([sys.executable, str(SKRIPT), ereignis],
                                   input=json.dumps(eingabe), text=True, capture_output=True,
                                   env={"HOERBUCH_GENERATOR": str(self.tmp),
-                                       "PATH": "/usr/bin:/bin", **aus})
+                                       "PATH": "/usr/bin:/bin", "HOME": str(self.tmp), **aus})
             self.assertEqual((lauf.returncode, lauf.stdout), (0, ""), ereignis)
             self.assertFalse(self.protokoll.exists(), ereignis)
         # Nur "1" schaltet ab, wie bei SPRECHEN_UNTERBRECHEN
@@ -173,13 +173,15 @@ class Hook(unittest.TestCase):
         for argumente in ([], ["Stop"], ["prompt", "zuviel"]):
             lauf = subprocess.run([sys.executable, str(SKRIPT), *argumente], input="{}",
                                   text=True, capture_output=True,
-                                  env={"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin"})
+                                  env={"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin",
+                                       "HOME": str(self.tmp)})
             self.assertEqual(lauf.returncode, 0, argumente)
 
     def test_kaputte_eingabe_bricht_nicht_ab(self):
         lauf = subprocess.run([sys.executable, str(SKRIPT), "stop"], input="[1, 2]", text=True,
                               capture_output=True,
-                              env={"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin"})
+                              env={"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin",
+                                   "HOME": str(self.tmp)})
         self.assertEqual(lauf.returncode, 0)
 
     # --- notification: fester Satz, wenn Claude wartet und der Modus an ist ---------------
@@ -276,6 +278,27 @@ class Hook(unittest.TestCase):
                                   ("/sprechen bitte", "an")):
             self.assertEqual(self._prompt(eingabe), ("", ""), eingabe)
             self.assertEqual(self._modus(), erwartet, eingabe)
+
+    def test_stummschalter_aendert_den_modus_nicht(self):
+        for eingabe in ("/sprechen stumm", "/sprechen Laut."):
+            _, ausgabe = self._prompt(eingabe)
+            self.assertEqual(json.loads(ausgabe)["decision"], "block", eingabe)
+            self.assertIsNone(self._modus(), eingabe)
+        # Im Transkript zählt der Aufruf davor, etwa wenn der Hook fehlte
+        self.assertEqual(self._hinweis(START, self._command("aus"), self._command("stumm")), "")
+        self.assertNotEqual(self._hinweis(START, self._command("laut")), "")
+
+    def test_stumm_haelt_den_dienst_hier_an(self):
+        stumm = self.tmp / ".cache" / "hoerbuch-generator" / "stumm"
+        stumm.parent.mkdir(parents=True)
+        stumm.write_text("1700000000\n", encoding="utf-8")
+        antwort = {"last_assistant_message": "<!-- sprechen: Hallo. -->"}
+        self.assertEqual(self._lauf("stop", antwort), (0, ""))
+        self.assertEqual(self._lauf("notification", {"notification_type": "permission_prompt",
+                                                     "transcript_path": self._transkript(START)}),
+                         (0, ""))
+        stumm.unlink()
+        self.assertEqual(self._lauf("stop", antwort), (0, "-v marketing -t 1.1 --lauter 8 -\nHallo."))
 
     def test_andere_eingaben_halten_nichts_fest(self):
         for eingabe in ("Weiter", "/sprechenx aus", "bitte /sprechen aus", "Psst"):
@@ -439,7 +462,9 @@ class Hook(unittest.TestCase):
                               input=json.dumps({"last_assistant_message": "<!-- sprechen: x -->"}),
                               text=True, capture_output=True,
                               env={"HOERBUCH_GENERATOR": str(self.tmp / "fehlt"),
-                                   "PATH": "/usr/bin:/bin"})
+                                   "PATH": "/usr/bin:/bin", "HOME": str(self.tmp)})
+        # HOME im Testordner: Sonst gölte die Einstellungsdatei des Geräts, auf dem der Test
+        # läuft, und mit deren Gerätewahl ginge der Auftrag per ssh hinaus
         self.assertEqual(lauf.returncode, 0)
         self.assertIn("sprechen.sh fehlt", lauf.stderr)
 
@@ -746,6 +771,37 @@ class SperreAmPlayer(unittest.TestCase):
         self.assertNotEqual(a.wait(timeout=5), 0)
         # Sperre frei: Der Stopp findet niemanden und endet ohne Fehler
         self.assertEqual(subprocess.run(stopp, timeout=10).returncode, 0)
+
+    def test_stumm_startet_keinen_player(self):
+        self.sperre.parent.mkdir(parents=True)
+        (self.sperre.parent / "stumm").write_text("1700000000\n", encoding="utf-8")
+        a = self._player("a")
+        a.stdin.write(b"PCM")
+        a.stdin.close()
+        self.assertEqual(a.wait(timeout=10), self.c.STUMM_RC)
+        self.assertEqual(self._ablauf(), [])
+        self.assertFalse((self.sperre.parent / "letzte.pcm").exists())
+
+    def test_ohne_python3_prueft_die_shell_den_stummschalter(self):
+        # FERN_PLAYER auf einem Gerät, dessen python3 kein fcntl kennt: ohne Sperre, aber still
+        bin_ = self.tmp / "bin"
+        bin_.mkdir()
+        gespielt = self.tmp / "gespielt.pcm"
+        for name, inhalt in (("python3", "exit 1"), ("paplay", f'cat > "{gespielt}"')):
+            (bin_ / name).write_text(f"#!/bin/sh\n{inhalt}\n", encoding="utf-8")
+            (bin_ / name).chmod(0o755)
+        umgebung = {"HOME": str(self.tmp), "PATH": f"{bin_}:/usr/bin:/bin"}
+        stumm = self.tmp / ".cache" / "hoerbuch-generator" / "stumm"
+        stumm.parent.mkdir(parents=True)
+        stumm.write_text("1700000000\n", encoding="utf-8")
+        lauf = subprocess.run(["/bin/sh", "-c", self.c.FERN_PLAYER], input=b"PCM", env=umgebung,
+                              capture_output=True, timeout=10)
+        self.assertEqual(lauf.returncode, self.c.STUMM_RC, lauf.stderr)
+        self.assertFalse(gespielt.exists())
+        stumm.unlink()
+        lauf = subprocess.run(["/bin/sh", "-c", self.c.FERN_PLAYER], input=b"PCM", env=umgebung,
+                              capture_output=True, timeout=10)
+        self.assertEqual((lauf.returncode, gespielt.read_bytes()), (0, b"PCM"), lauf.stderr)
 
     def test_der_ton_wird_fuer_nochmal_mitgeschrieben(self):
         ausgabe = self.tmp / "gespielt.pcm"
@@ -1133,6 +1189,97 @@ class Tastenkuerzel(unittest.TestCase):
         self.assertEqual(self.protokoll.read_text(encoding="utf-8"),
                          "--stopp --quelle tastenkuerzel --sonst-aktuell\n")
 
+    def test_taste_stumm_schaltet_um_und_nochmal_bleibt_still(self):
+        lauf = self._lauf("taste-stumm")
+        self.assertEqual((lauf.returncode, lauf.stdout.strip()),
+                         (0, "Gesprächsmodus: stumm hier. /sprechen laut hebt es auf."))
+        self.assertRegex((self.ordner / "stumm").read_text(encoding="utf-8"), r"^\d+\n$")
+        (self.ordner / "letzte.pcm").write_bytes(b"PCM-letzte")
+        lauf = self._lauf("nochmal", {"SPRECHEN_PLAYER": "cat"})
+        self.assertEqual(lauf.returncode, 1)
+        self.assertIn("stumm geschaltet", lauf.stderr)
+        lauf = self._lauf("taste-stumm")
+        self.assertEqual(lauf.stdout.strip(), "Gesprächsmodus: wieder laut hier.")
+        self.assertFalse((self.ordner / "stumm").exists())
+
+
+class Stummschalter(unittest.TestCase):
+    """/sprechen stumm und laut über ein falsches ssh, das den Befehl mit HOME unter
+    geraet.<ziel> ausführt; "schlaeft" ist nicht erreichbar. Der Mac, der rechnet, hat sein
+    falsches sprechen.sh unter fern/."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="stumm"))
+        self.bin = self.tmp / "bin"
+        self.protokoll = self.tmp / "aufrufe.txt"
+        dateien = {
+            "bin/ssh": '#!/bin/sh\nziel=""; letztes=""\n'
+                       'for a; do ziel="$letztes"; letztes="$a"; done\n'
+                       'printf "ssh %s\\n" "$ziel" >> "$PROTOKOLL"\n'
+                       '[ "$ziel" = schlaeft ] && exit 255\n'
+                       'mkdir -p "$WURZEL/geraet.$ziel"\n'
+                       'HOME="$WURZEL/geraet.$ziel" exec /bin/sh -c "$letztes"\n',
+            "generator/sprechen.sh": 'printf "hier %s\\n" "$*" >> "$PROTOKOLL"\n',
+            "generator/.venv/bin/python": "",
+            "fern/sprechen.sh": '#!/bin/sh\nprintf "fern %s\\n" "$*" >> "$PROTOKOLL"\n',
+        }
+        for name, inhalt in dateien.items():
+            datei = self.tmp / name
+            datei.parent.mkdir(parents=True, exist_ok=True)
+            datei.write_text(inhalt, encoding="utf-8")
+            datei.chmod(0o755)
+        self.env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.tmp),
+                    "XDG_RUNTIME_DIR": str(self.tmp / "run"),
+                    "HOERBUCH_GENERATOR": str(self.tmp / "generator"),
+                    "SPRECHEN_ENTFERNT": "mac", "SPRECHEN_ENTFERNT_REPO": str(self.tmp / "fern"),
+                    "SPRECHEN_GERAETE": "hier buero schlaeft",
+                    "PROTOKOLL": str(self.protokoll), "WURZEL": str(self.tmp)}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _prompt(self, text: str) -> str:
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "prompt"], text=True,
+                              input=json.dumps({"prompt": text, "session_id": "abc"}),
+                              capture_output=True, env=self.env, timeout=30)
+        self.assertEqual(lauf.returncode, 0, lauf.stderr)
+        antwort = json.loads(lauf.stdout)
+        self.assertEqual(antwort["decision"], "block")
+        return antwort["reason"]
+
+    def _stumm(self, ort: str = "") -> Path:
+        basis = self.tmp / f"geraet.{ort}" if ort else self.tmp
+        return basis / ".cache" / "hoerbuch-generator" / "stumm"
+
+    def test_stumm_und_laut_auf_allen_geraeten(self):
+        self.assertEqual(self._prompt("/sprechen stumm"),
+                         "Gesprächsmodus: stumm hier und auf buero, mac. /sprechen laut hebt es "
+                         "auf. Nicht erreicht: schlaeft; dort klingt es weiter.")
+        for ort in ("", "buero", "mac"):
+            self.assertTrue(self._stumm(ort).exists(), ort)
+        aufrufe = self.protokoll.read_text(encoding="utf-8")
+        # Der Dienst hier und der auf dem Mac leeren ihre Warteschlange ganz
+        self.assertIn("hier --stopp\n", aufrufe)
+        self.assertIn("fern --stopp\n", aufrufe)
+        self.assertIn("Stummschalter an",
+                      (self.tmp / "run" / "hoerbuch-generator" / "wiedergabe.log").read_text())
+        self.protokoll.unlink()
+        self.assertEqual(self._prompt("/sprechen laut"),
+                         "Gesprächsmodus: wieder laut hier und auf buero, mac. Nicht erreicht: "
+                         "schlaeft; dort bleibt es stumm, bis /sprechen laut es erreicht.")
+        for ort in ("", "buero", "mac"):
+            self.assertFalse(self._stumm(ort).exists(), ort)
+        self.assertNotIn("--stopp", self.protokoll.read_text(encoding="utf-8"))
+        # Den Modus der Sitzung fasst der Stummschalter nicht an
+        self.assertFalse((self.tmp / "run" / "hoerbuch-generator" / "modus").exists())
+
+    def test_jedes_geraet_nur_einmal(self):
+        # Der Mac steht oft auch in der Gerätewahl
+        self.env["SPRECHEN_GERAETE"] = "buero mac"
+        self.assertEqual(self._prompt("/sprechen stumm"),
+                         "Gesprächsmodus: stumm hier und auf buero, mac. /sprechen laut hebt es auf.")
+        self.assertEqual(self.protokoll.read_text(encoding="utf-8").count("ssh mac\n"), 1)
+
 
 class Sitzungsbeginn(unittest.TestCase):
     """start: Der SessionStart-Hook gibt die Regeln aus sprechen.md als Kontext aus."""
@@ -1142,7 +1289,7 @@ class Sitzungsbeginn(unittest.TestCase):
             lauf = subprocess.run([sys.executable, str(SKRIPT), "start"],
                                   input=json.dumps({"session_id": "abc", "source": "startup"}),
                                   text=True, capture_output=True, timeout=20,
-                                  env={**os.environ, "XDG_RUNTIME_DIR": ordner})
+                                  env={**os.environ, "XDG_RUNTIME_DIR": ordner, "HOME": ordner})
         self.assertEqual(lauf.returncode, 0)
         ausgabe = json.loads(lauf.stdout)["hookSpecificOutput"]
         self.assertEqual(ausgabe["hookEventName"], "SessionStart")
@@ -1321,7 +1468,8 @@ class Pruefen(unittest.TestCase):
             'case "$letztes" in\n'
             '  *--status*) echo \'{"ok": true, "zustand": "bereit"}\';;\n'
             '  *describe*) echo v9.9.9;;\n'
-            '  *leerlauf*) echo "leerlauf 12"; echo "player ffmpeg";;\n'
+            '  *leerlauf*) echo "leerlauf 12"; echo "player ffmpeg"\n'
+            '              [ "$ziel" = still ] && echo "stumm 1700000000";;\n'
             'esac\n', encoding="utf-8")
         ssh.chmod(0o755)
         self.env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.tmp)}
@@ -1375,6 +1523,18 @@ class Pruefen(unittest.TestCase):
         self.assertIn("Hinweis: schlaeft: ssh antwortet nicht (ssh: connect: Operation timed out)",
                       aus)
         self.assertIn("Ergebnis: alles da (1 Hinweis)", aus)
+
+    def test_stumm_ist_ein_hinweis(self):
+        self._standard("buero still")
+        stumm = self.tmp / ".cache" / "hoerbuch-generator" / "stumm"
+        stumm.parent.mkdir(parents=True)
+        stumm.write_text("", encoding="utf-8")  # von Hand angelegt, ohne Zeit
+        rc, aus = self._pruefen()
+        self.assertEqual(rc, 0, aus)
+        self.assertIn("Stumm     Hinweis: hier, /sprechen laut hebt es auf", aus)
+        self.assertRegex(aus, r"Stumm     Hinweis: still seit \d\d\.\d\d\. \d\d:\d\d, ")
+        self.assertNotIn("buero seit", aus)
+        self.assertIn("Ergebnis: alles da (2 Hinweise)", aus)
 
     def test_antwortet_kein_geraet_ist_es_ein_problem(self):
         self._standard("schlaeft")

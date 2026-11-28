@@ -1,6 +1,6 @@
 ---
 description: "Gesprächsmodus an oder aus: Claude hängt jeder Antwort eine gesprochene Fassung an, die der Stop-Hook über den Sprechdienst (Qwen3-TTS) vorliest, oder mit datei als eingebettete Audiodatei."
-argument-hint: "[aus | datei]"
+argument-hint: "[aus | datei | stumm | laut]"
 disable-model-invocation: true
 ---
 
@@ -43,6 +43,13 @@ Bestätige mit genau dieser Antwort, ohne Datei:
 ```
 Der Gesprächsmodus ist an, die gesprochene Fassung kommt als Datei.
 ```
+
+## Bei `stumm` oder `laut`
+
+Den Stummschalter für alle Sitzungen legt der Prompt-Hook um, bevor diese Anweisung ankommt.
+Kommt sie trotzdem an, hat der Hook die Eingabe nicht abgefangen. Den Modus dieser Sitzung nicht
+ändern und nur antworten: „Den Stummschalter legt der Prompt-Hook um. Er hat diese Eingabe nicht
+abgefangen, `pruefen` im Terminal zeigt, was fehlt.“
 
 ## Sonst: Modus einschalten
 

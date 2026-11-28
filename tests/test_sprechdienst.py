@@ -279,6 +279,96 @@ class LetzteAusgabe(unittest.TestCase):
 
 
 @unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
+class Stummschalter(unittest.TestCase):
+    """Liegt die Datei stumm neben LETZTE_PCM, spielt der Dienst nichts selbst ab, auch einen
+    Auftrag nicht, der nach dem Stopp des Stummschalters ankam. Geliefert wird weiter."""
+
+    def setUp(self):
+        import socket
+
+        import numpy as np
+        import sprechdienst
+        self.s = sprechdienst
+        self.dienst = sprechdienst.Dienst(Path(tempfile.gettempdir()) / "unbenutzt.sock", 60)
+        self.gespielt: list[int] = []
+
+        class Player:
+            playing = False
+
+            def queue_audio(_, audio):
+                self.gespielt.append(len(audio))
+
+            def buffered_samples(_):
+                return 0
+
+            def start_stream(_):
+                pass
+
+            def wait_for_drain(_):
+                pass
+
+            def stop_stream(_, *, abort=False):
+                pass
+
+        self.dienst.player = Player()
+        self.ordner = Path(tempfile.mkdtemp(prefix="stumm"))
+        self.stumm = self.ordner / "stumm"
+        self.stumm.write_text("1700000000\n", encoding="utf-8")
+        self.dienst_seite, self.aufrufer = socket.socketpair()
+        self.ton = np.zeros(sprechdienst.qwen.SAMPLE_RATE // 5, np.float32)
+        self.patches = [
+            unittest.mock.patch.object(sprechdienst, "LETZTE_PCM", self.ordner / "letzte.pcm"),
+            unittest.mock.patch.object(sprechdienst.qwen, "synthesize_chunk",
+                                       return_value=self.ton)]
+        for patch in self.patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in self.patches:
+            patch.stop()
+        self.dienst_seite.close()
+        self.aufrufer.close()
+        shutil.rmtree(self.ordner, ignore_errors=True)
+
+    def _auftrag(self, **weitere):
+        return self.s.Auftrag(text="Ein Satz, der lang genug für ein eigenes Stück ist.",
+                              stimme="erzaehler", tempo=1.0, mit_atem=True,
+                              runde=self.dienst.runde, **weitere)
+
+    def test_stumm_spielt_nichts_ab(self):
+        auftrag = self._auftrag()
+        with self.assertLogs("sprechdienst", "INFO"):
+            self.dienst._sprechen(None, auftrag, None, "", None)
+        self.assertEqual(self.gespielt, [])
+        self.assertTrue(auftrag.ergebnis["abgebrochen"])
+        self.assertFalse((self.ordner / "letzte.pcm").exists())
+        self.stumm.unlink()
+        auftrag = self._auftrag()
+        self.dienst._sprechen(None, auftrag, None, "", None)
+        self.assertNotEqual(self.gespielt, [])
+        self.assertFalse(auftrag.ergebnis["abgebrochen"])
+
+    def test_geliefert_wird_trotzdem(self):
+        auftrag = self._auftrag(ziel=self.dienst_seite)
+        # Lesen in einem eigenen Thread wie bei Liefern: Der Puffer eines socketpair fasst nur
+        # wenige KB
+        empfangen: list[bytes] = []
+
+        def lesen():
+            while teil := self.aufrufer.recv(65536):
+                empfangen.append(teil)
+
+        leser = threading.Thread(target=lesen, daemon=True)
+        leser.start()
+        self.dienst._sprechen(None, auftrag, None, "", None)
+        self.dienst_seite.shutdown(2)
+        leser.join(timeout=5)
+        self.assertFalse(auftrag.ergebnis["abgebrochen"])
+        self.assertGreater(len(b"".join(empfangen)), 0)
+        self.assertEqual(self.gespielt, [])
+
+
+@unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
 class SprecherUebersteht(unittest.TestCase):
     """Ein Fehler in einem Auftrag (etwa kein Ausgabegeraet) darf den Sprecher-Thread nicht
     beenden; der Dienst naehme sonst weiter Auftraege an, ohne je zu sprechen. MLX und

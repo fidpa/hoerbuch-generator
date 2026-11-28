@@ -16,6 +16,7 @@ Usage (als Hook, Eingabe ist das Hook-JSON auf stdin; Einrichtung: README.md dan
     .venv/bin/python integrationen/claude-code/claude_sprechen.py pruefen  Einrichtung prüfen
     python3 integrationen/claude-code/claude_sprechen.py taste-stopp  beenden, was hier klingt
     python3 integrationen/claude-code/claude_sprechen.py nochmal      letzte Antwort hier noch einmal
+    python3 integrationen/claude-code/claude_sprechen.py taste-stumm  alle Geräte stumm oder laut
 
 Was die Hooks tun, wann sie stumm bleiben und wie Fernbetrieb und Gerätewahl zusammenspielen,
 steht in README.md daneben; hier nur das Nötigste zum Lesen des Codes:
@@ -34,6 +35,10 @@ steht in README.md daneben; hier nur das Nötigste zum Lesen des Codes:
   ~/.claude/settings.json und meldet je Gerät, was fehlt (Exit 1).
 - taste-stopp und nochmal sind für Tastenkürzel auf dem Gerät, das spielt: Sie wirken auf
   player.lock und LETZTE_PCM daneben, wo der Dienst läuft auch auf dessen eigene Wiedergabe.
+- /sprechen stumm und /sprechen laut (oder taste-stumm) legen die Datei STUMM neben player.lock
+  auf diesem Gerät, auf den Geräten der Gerätewahl und dem Mac, der rechnet, an oder löschen
+  sie. Wo sie liegt, spielt nichts (SPERRE_PY, FERN_PLAYER, abspielen, sprechen_lassen, dazu
+  der Dienst selbst, sprechdienst.py); der Modus der Sitzungen bleibt, wie er war.
 
 Einstellungen über Umgebungsvariablen oder je Gerät in ~/.config/hoerbuch-generator/sprechen.conf
 (XDG_CONFIG_HOME, eine Zeile NAME=WERT je Variable, außer SPRECHEN_AUS); die Umgebung gilt vor
@@ -106,6 +111,8 @@ VORSPANN_DATEI = ("Der Gesprächsmodus dieser Sitzung steht auf Datei (/sprechen
                   "schaltet auf Ton, /sprechen aus ab. Bis dahin gilt:\n\n")
 # Der Prompt-Hook bekommt die Eingabe so, wie sie getippt wurde (Hook-Doku, UserPromptSubmit)
 SPRECHEN_EINGABE = re.compile(r"\s*/sprechen(?:\s+(.*))?\Z", re.DOTALL)
+# /sprechen stumm und laut: Stummschalter für alle Sitzungen, der Prompt-Hook erledigt sie
+SCHALTER = ("stumm", "laut")
 MODUS_HALTEN = 30 * 24 * 3600  # Sekunden; ältere Modus-Dateien räumt das nächste Schreiben weg
 # Notification: ein fester Satz je Typ. idle_prompt fehlt mit Absicht: Er kommt rund 60 s nach
 # jeder Antwort, die der Stop-Hook gerade gesprochen hat
@@ -200,8 +207,12 @@ SPIELER_WAHL = (
 # Tastenkürzel, hängender Halter) beendet auch den Player, ebenso das Ende des Elternprozesses
 # (Stoppwort der eigenen Sitzung, ssh fort): Sonst spielte der Player noch die Puffer von
 # Halter und Pipe aus, länger als einst mit exec
+# Liegt STUMM neben der Sperrdatei, endet der Halter mit STUMM_RC, sobald er die Sperre hat,
+# und der Player startet nicht (Stummschalter, stumm_schalten)
 SPERRE_DATEI = "$HOME/.cache/hoerbuch-generator/player.lock"
 LETZTE_PCM = "letzte.pcm"
+STUMM = "stumm"
+STUMM_RC = 75  # kein Fehler des Players, abspielen meldet es als stumm
 SPERRE_ALTER = 600  # Sekunden; eine gesprochene Antwort dauert selten eine Minute
 SPERRE_PY = (
     "import fcntl, os, select, sys, time\n"
@@ -230,6 +241,8 @@ SPERRE_PY = (
     "    time.sleep(0.2)\n"
     "if os.getppid() != eltern or eltern == 1:\n"
     "    sys.exit(0)\n"
+    f"if os.path.exists(os.path.join(os.path.dirname(sys.argv[1]), {STUMM!r})):\n"
+    f"    sys.exit({STUMM_RC})\n"
     "if f is None:\n"
     "    os.execvp(sys.argv[2], sys.argv[2:])\n"
     "f.seek(0); f.truncate(); f.write('%d %d' % (os.getpid(), time.time())); f.flush()\n"
@@ -291,10 +304,13 @@ SPERRE_PY = (
 # und öffnet bei jedem Aufruf den Dialog zur Installation. xcode-select -p fragt, ohne ihn
 SPERRE_DA = ('{ [ "$(uname)" != Darwin ] || [ "$(command -v python3)" != /usr/bin/python3 ] '
              "|| xcode-select -p >/dev/null 2>&1; } && python3 -c 'import fcntl' >/dev/null 2>&1")
+# Ohne python3 spielt der Player ohne Sperre; den Stummschalter prüft dann die Shell
+FERN_STUMM = f'"$HOME/.cache/hoerbuch-generator/{STUMM}"'
 FERN_PLAYER = (
     f'{FERN_PATH}S="{SPERRE_DATEI}"; '
     f"if {SPERRE_DA}; then exec python3 -c {shlex.quote(SPERRE_PY)} \"$S\" "
-    f"sh -c {shlex.quote(SPIELER_WAHL)}; fi; {SPIELER_WAHL}")
+    f"sh -c {shlex.quote(SPIELER_WAHL)}; fi; "
+    f"if [ -e {FERN_STUMM} ]; then exit {STUMM_RC}; fi; {SPIELER_WAHL}")
 # Stoppwort ohne eigene Ausgabe: den Player beenden, der dort gerade die Sperre hält. Ist sie
 # frei, klingt dort nichts, und die PID in der Datei gehört einem beendeten Player
 STOPP_PY = (
@@ -309,6 +325,11 @@ STOPP_PY = (
     "        pass\n")
 FERN_STOPP = (f'{FERN_PATH}S="{SPERRE_DATEI}"; if [ -f "$S" ] && {SPERRE_DA}; then '
               f'python3 -c {shlex.quote(STOPP_PY)} "$S"; fi; true')
+# Stummschalter auf einem anderen Gerät: Exit 0 nur, wenn die Datei angelegt oder fort ist
+FERN_STUMM_AN = (f'mkdir -p "$HOME/.cache/hoerbuch-generator" && date +%s > {FERN_STUMM} '
+                 f"|| exit 1; {FERN_STOPP}")
+FERN_STUMM_AUS = f"rm -f {FERN_STUMM}"
+FERN_STUMM_LESEN = f'if [ -e {FERN_STUMM} ]; then echo "stumm $(head -c 20 {FERN_STUMM})"; fi'
 # Für pruefen: dieselbe Suche, nur den Namen ausgeben statt abzuspielen, dazu die Sperre
 FERN_PLAYER_NAME = (FERN_PATH + re.sub(r"exec (\w+)[^;]*;", r"printf %s \1;", SPIELER_WAHL)
                     + f"; if {SPERRE_DA}; then echo ' mit Sperre'; "
@@ -351,11 +372,19 @@ def regeln(von: str = EINSCHALTEN, bis: str = BESTAETIGEN) -> str:
     return text[anfang + len(von):ende].strip()
 
 
-def _modus_wort(argumente: str) -> str:
-    """Modus aus den Argumenten von /sprechen: "aus", "datei", sonst "an". Satzzeichen am
-    ersten Wort zählen nicht: „/sprechen aus.“ schaltet auch aus."""
+def _erstes_wort(argumente: str) -> str:
+    """Erstes Wort der Argumente von /sprechen, klein und ohne Satzzeichen: „/sprechen aus.“
+    schaltet auch aus."""
     worte = argumente.split()
-    erstes = re.sub(r"\W+", "", worte[0].casefold()) if worte else ""
+    return re.sub(r"\W+", "", worte[0].casefold()) if worte else ""
+
+
+def _modus_wort(argumente: str) -> str | None:
+    """Modus aus den Argumenten von /sprechen: "aus", "datei", sonst "an"; None für stumm und
+    laut, die den Modus der Sitzung nicht ändern."""
+    erstes = _erstes_wort(argumente)
+    if erstes in SCHALTER:
+        return None
     return erstes if erstes in ("aus", "datei") else "an"
 
 
@@ -363,6 +392,13 @@ def modus_aus_eingabe(prompt: str) -> str | None:
     """Modus, den eine Eingabe /sprechen [aus | datei] setzt; None bei jeder anderen Eingabe."""
     treffer = SPRECHEN_EINGABE.match(prompt or "")
     return _modus_wort(treffer.group(1) or "") if treffer else None
+
+
+def schalter_aus_eingabe(prompt: str) -> str | None:
+    """"stumm" oder "laut" bei /sprechen stumm und /sprechen laut, sonst None."""
+    treffer = SPRECHEN_EINGABE.match(prompt or "")
+    wort = _erstes_wort(treffer.group(1) or "") if treffer else ""
+    return wort if wort in SCHALTER else None
 
 
 def _modus_pfad(sitzung: str) -> Path:
@@ -420,7 +456,7 @@ def modus(transcript: str) -> str | None:
             if (eintrag.get("type") == "user" and isinstance(inhalt, str)
                     and SPRECHEN_COMMAND in inhalt):
                 treffer = COMMAND_ARGS.search(inhalt)
-                zustand = _modus_wort(treffer.group(1) if treffer else "")
+                zustand = _modus_wort(treffer.group(1) if treffer else "") or zustand
             elif (isinstance(anhang, dict) and anhang.get("type") == "hook_additional_context"
                   and START_KENNUNG in str(anhang.get("content"))):
                 zustand = "an"
@@ -619,12 +655,16 @@ def abspielen(auftrag: dict) -> int:
             if geraet is None:
                 log.info("kein Gerät in Benutzung, die Antwort bleibt stumm")
                 return 0
-            if geraet == HIER and not ziel:
-                # Rechnet und spielt dieses Gerät, spielt der Dienst selbst wie ohne Gerätewahl
-                rc = aufrufen([*auftrag["args"], "-"], auftrag["text"])
-                if rc == 0:
-                    log.info("an den Dienst hier übergeben")
-                return rc
+        if geraet in (None, HIER) and stumm_seit() is not None:
+            # Spielt ein anderes Gerät, prüft dessen Halter (SPERRE_PY) seine eigene Datei
+            log.info("stumm geschaltet, die Antwort bleibt still")
+            return 0
+        if geraet == HIER and not ziel:
+            # Rechnet und spielt dieses Gerät, spielt der Dienst selbst wie ohne Gerätewahl
+            rc = aufrufen([*auftrag["args"], "-"], auftrag["text"])
+            if rc == 0:
+                log.info("an den Dienst hier übergeben")
+            return rc
         player = player_befehl() if geraet in (None, HIER) else ["ssh", *SSH_OPTIONEN, geraet,
                                                                  FERN_PLAYER]
         if not player:
@@ -666,7 +706,9 @@ def abspielen(auftrag: dict) -> int:
                               ziel or HIER, NACHLAUF)
                     return 0
                 # Endet der Player vorzeitig, stirbt ssh an SIGPIPE; kein Fehler des Macs
-                if spieler.returncode == 0 and ssh.returncode != 0:
+                if spieler.returncode == STUMM_RC:
+                    log.info("%s ist stumm geschaltet, die Antwort bleibt still", geraet or HIER)
+                elif spieler.returncode == 0 and ssh.returncode != 0:
                     log.error("sprechen.sh auf %s endete mit %s", ziel or HIER, ssh.returncode)
                 elif spieler.returncode != 0:
                     log.error("Player %s endete mit %s", name, spieler.returncode)
@@ -880,6 +922,10 @@ def nochmal() -> int:
     if not player:
         log.error("kein Player (paplay, pw-play, aplay, ffmpeg, ffplay, SPRECHEN_PLAYER)")
         return 1
+    if stumm_seit() is not None:
+        # Der Halter spielte ohnehin nicht; so sagt es das Tastenkürzel
+        log.error("Dieses Gerät ist stumm geschaltet, /sprechen laut hebt es auf")
+        return 1
     ordner = zustand_ordner()
     try:
         ordner.mkdir(parents=True, exist_ok=True)
@@ -894,6 +940,98 @@ def nochmal() -> int:
     except OSError as e:
         log.error("Nochmal nicht startbar: %s", e)
         return 1
+    return 0
+
+
+# --- Stummschalter für alle Sitzungen ------------------------------------------------------
+
+def stumm_seit() -> float | None:
+    """Seit wann dieses Gerät stumm ist (Sekunden seit 1970); 0.0, wenn die Datei keine Zeit
+    nennt, None, wenn es nicht stumm ist."""
+    try:
+        inhalt = player_sperre().with_name(STUMM).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    try:
+        return float(inhalt.split()[0])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _seit(sekunden: float) -> str:
+    return f" seit {time.strftime('%d.%m. %H:%M', time.localtime(sekunden))}" if sekunden else ""
+
+
+def stumm_ziele() -> list[str]:
+    """Andere Geräte, auf denen der Stummschalter wirkt: die Gerätewahl, wie beim Stoppwort,
+    und der Mac, der rechnet. Er spielt die Antworten seiner eigenen Sitzungen."""
+    entfernt = os.environ.get("SPRECHEN_ENTFERNT", "")
+    return [g for g in dict.fromkeys([*stopp_geraete(), entfernt]) if g and g != HIER]
+
+
+def stumm_schalten(stumm: bool) -> str:
+    """Alle Sitzungen stumm oder wieder laut: die Datei STUMM hier und auf jedem Gerät aus
+    stumm_ziele anlegen oder löschen. Stumm beendet auch, was gerade klingt, und leert die
+    Warteschlange des Dienstes. Liefert den Satz für den Nutzer, samt der Geräte, die ssh
+    nicht erreichte: Dort gilt der alte Zustand weiter."""
+    datei = player_sperre().with_name(STUMM)
+    hier_ok = True
+    try:
+        if stumm:
+            datei.parent.mkdir(parents=True, exist_ok=True)
+            datei.write_text(f"{int(time.time())}\n", encoding="utf-8")
+        else:
+            datei.unlink(missing_ok=True)
+    except OSError as e:
+        log.error("Stummschalter hier nicht schreibbar: %s", e)
+        hier_ok = False
+    entfernt = os.environ.get("SPRECHEN_ENTFERNT", "")
+    befehle = []
+    for ziel in stumm_ziele():
+        befehl = FERN_STUMM_AN if stumm else FERN_STUMM_AUS
+        if stumm and ziel == entfernt:
+            befehl += f"; {_fern_pfad('sprechen.sh')} --stopp >/dev/null 2>&1; true"
+        befehle.append((ziel, ["ssh", *SSH_OPTIONEN, ziel, befehl]))
+    if stumm and player_sperre().exists():
+        befehle.append(("", [sys.executable, "-c", STOPP_PY, str(player_sperre())]))
+    if stumm and (sprechen_sh().parent / ".venv" / "bin" / "python").exists():
+        # Ohne Quelle trifft --stopp alle Aufträge, auch die wartenden
+        befehle.append(("", ["/bin/bash", str(sprechen_sh()), "--stopp"]))
+    erreicht, fehlt = [], []
+    laeufe = []
+    for ziel, befehl in befehle:
+        try:
+            laeufe.append((ziel, subprocess.Popen(befehl, stdin=subprocess.DEVNULL,
+                                                  stdout=subprocess.DEVNULL,
+                                                  stderr=subprocess.DEVNULL)))
+        except OSError as e:
+            log.error("Stummschalter auf %s nicht startbar: %s", ziel or HIER, e)
+            if ziel:
+                fehlt.append(ziel)
+    # Parallel und mit einer Frist für alle: Der Prompt-Hook hat zehn Sekunden
+    ende = time.monotonic() + STOPP_TIMEOUT
+    for ziel, lauf in laeufe:
+        fertig = _warten(lauf, max(0.0, ende - time.monotonic()))
+        if ziel:
+            (erreicht if fertig and lauf.returncode == 0 else fehlt).append(ziel)
+    teile = ([HIER] if hier_ok else []) + ([f"auf {', '.join(erreicht)}"] if erreicht else [])
+    orte = " und ".join(teile) or "nirgends"
+    if stumm:
+        satz = f"Gesprächsmodus: stumm {orte}. /sprechen laut hebt es auf."
+        rest = "dort klingt es weiter"
+    else:
+        satz = f"Gesprächsmodus: wieder laut {orte}."
+        rest = "dort bleibt es stumm, bis /sprechen laut es erreicht"
+    if fehlt or not hier_ok:
+        satz += f" Nicht erreicht: {', '.join([*([] if hier_ok else [HIER]), *fehlt])}; {rest}."
+    protokollieren(f"Stummschalter {'an' if stumm else 'aus'}: {satz}")
+    return satz
+
+
+def taste_stumm() -> int:
+    """Tastenkürzel: Stummschalter umlegen, je nachdem, ob dieses Gerät gerade stumm ist. Der
+    Satz geht nach stdout, damit eine Kurzbefehle-App ihn anzeigen kann."""
+    print(stumm_schalten(stumm_seit() is None))
     return 0
 
 
@@ -912,6 +1050,8 @@ def sprechen_lassen(eingabe: dict, text: str) -> None:
             wiedergabe_starten(sprechen, text, sitzung)
         except OSError as e:
             log.error("Wiedergabe nicht startbar: %s", e)
+    elif stumm_seit() is not None:
+        log.info("stumm geschaltet, die Antwort bleibt still")
     else:
         aufrufen([*sprechen, "-"], text)
 
@@ -1206,17 +1346,26 @@ def pruefen() -> int:
     # Ein schlafendes Gerät ist der Normalfall der Gerätewahl, es spielt dann ein anderes.
     # Ein Fehler ist es erst, wenn keines antwortet
     befunde: list[tuple[str, bool, bool]] = []  # Text, Problem, ssh antwortet nicht
+    # Ein Hinweis, kein Fehler: Wer im Meeting stumm schaltet und es vergisst, soll es hier sehen
+    stille: list[tuple[str, float]] = []
+    if stumm_seit() is not None:
+        stille.append((HIER, stumm_seit() or 0.0))
     for geraet in geraete():
         if geraet == HIER:
             befehl = _leerlauf_befehl(HIER)
         else:
             befehl = ["ssh", *SSH_OPTIONEN, geraet,
-                      f'echo "leerlauf $({LEERLAUF})"; echo "player $({FERN_PLAYER_NAME})"']
+                      f'echo "leerlauf $({LEERLAUF})"; echo "player $({FERN_PLAYER_NAME})"; '
+                      f"{FERN_STUMM_LESEN}"]
         rc, aus, fehler = _lauf(befehl, ERKENNUNG_TIMEOUT)
         if geraet != HIER and rc in (124, 255):
             befunde.append((f"{geraet}: ssh antwortet nicht ({fehler})", True, True))
             continue
         werte = dict(zeile.split(" ", 1) for zeile in aus.splitlines() if " " in zeile)
+        zeile = next((z for z in aus.splitlines() if z.startswith(STUMM)), None)
+        if geraet != HIER and zeile is not None:
+            zeit = zeile[len(STUMM):].strip()
+            stille.append((geraet, float(zeit) if zeit.isdigit() else 0.0))
         sekunden = (werte.get("leerlauf", "") if geraet != HIER else aus).strip()
         teile = []
         problem = False
@@ -1235,6 +1384,8 @@ def pruefen() -> int:
     keines = all(stumm for _, _, stumm in befunde)
     for text, problem, stumm in befunde:
         melden("Gerät", text, problem and (keines or not stumm), hinweis=stumm)
+    for geraet, seit in stille:
+        melden("Stumm", f"{geraet}{_seit(seit)}, /sprechen laut hebt es auf", hinweis=True)
 
     zusatz = f" ({hinweise} Hinweis{'e' if hinweise > 1 else ''})" if hinweise else ""
     print(f"Ergebnis: {'alles da' if not probleme else f'{probleme} Problem(e)'}{zusatz}")
@@ -1245,7 +1396,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Claude-Code-Hooks für den Sprechdienst")
     # abspielen ist intern: der Hintergrundprozess des Fernbetriebs
     parser.add_argument("ereignis", choices=["stop", "prompt", "start", "notification",
-                                             "pruefen", "abspielen", "taste-stopp", "nochmal"])
+                                             "pruefen", "abspielen", "taste-stopp", "nochmal",
+                                             "taste-stumm"])
     try:
         args = parser.parse_args()
     except SystemExit:
@@ -1263,6 +1415,8 @@ def main() -> int:
         return taste_stopp()
     if args.ereignis == "nochmal":
         return nochmal()
+    if args.ereignis == "taste-stumm":
+        return taste_stumm()
 
     try:
         eingabe = json.load(sys.stdin)
@@ -1330,6 +1484,13 @@ def main() -> int:
 
     if args.ereignis == "prompt":
         prompt = str(eingabe.get("prompt", ""))
+        schalter = schalter_aus_eingabe(prompt)
+        if schalter:
+            # Wie beim Stoppwort erreicht die Eingabe Claude nicht: Der Modus der Sitzung bleibt,
+            # und eine Antwort mit Marke bliebe ohnehin still
+            print(json.dumps({"decision": "block", "reason": stumm_schalten(schalter == "stumm")},
+                             ensure_ascii=False))
+            return 0
         neu = modus_aus_eingabe(prompt)
         if neu and sitzung:
             try:

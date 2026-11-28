@@ -6,6 +6,31 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.15.0] - 2026-11-28: Stummschalter für alle Sitzungen
+
+### Hinzugefügt
+
+- **Stummschalter für alle Sitzungen:** `/sprechen stumm` macht jede Sitzung auf jedem Gerät
+  still, etwa für ein Meeting, `/sprechen laut` hebt das wieder auf. Bisher musste jede Sitzung
+  einzeln `/sprechen aus` bekommen und danach wieder `/sprechen`. Der Prompt-Hook legt die Datei
+  `~/.cache/hoerbuch-generator/stumm` hier, auf den Geräten aus `SPRECHEN_GERAETE` und auf dem
+  Mac aus `SPRECHEN_ENTFERNT` an und bricht ab, was dort klingt, samt Warteschlange des Dienstes.
+  Wo die Datei liegt, spielt nichts, gleich aus welcher Sitzung: Der Player startet nicht, mit
+  Sperre wie ohne (Gerät ohne `python3`), und der Dienst spielt selbst nichts ab, auch keinen
+  Auftrag, der erst nach dem Umlegen ankam. Ton für andere Geräte liefert er weiter. Ein Dienst,
+  der schon vor dem Update lief, braucht dafür einen Neustart. Der Modus der Sitzungen bleibt
+  unberührt: Nach `/sprechen laut` sprechen genau die wieder, die vorher an waren. Claude bekommt
+  beide Eingaben nicht. Die Meldung nennt Geräte, die ssh nicht erreichte. `pruefen` zeigt stumme
+  Geräte als Hinweis, `nochmal` spielt dort nicht. Das Tastenkürzel `taste-stumm` legt den
+  Schalter ebenso um.
+
+### Behoben
+
+- **Ein Test las die Einstellungsdatei des Geräts:** `test_fehlender_generator_bricht_nicht_ab`
+  lief ohne eigenes HOME. Auf einem Gerät mit `sprechen.conf` und Gerätewahl ging sein Auftrag
+  in den Hintergrund und per ssh hinaus, statt das fehlende `sprechen.sh` zu melden. Vier
+  weitere Tests des Hook-Skripts bekommen ebenso ein eigenes HOME; sie lasen dort nur.
+
 ## [0.14.0] - 2026-11-28: Einstellungen je Gerät in einer Datei
 
 ### Hinzugefügt
@@ -353,6 +378,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.15.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.15.0
 [0.14.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.14.0
 [0.13.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.13.0
 [0.12.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.12.0

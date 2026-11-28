@@ -132,6 +132,7 @@ ihn beendet; den nächsten Start übernimmt der Hook.
 | Gesprächsmodus aus | `/sprechen aus` |
 | Audiodatei in der Antwort statt Ton, etwa am Handy | `/sprechen datei`; zurück mit `/sprechen` |
 | Ausgabe abbrechen | nur ein Stoppwort eingeben: „Psst“, „Pst“, „Still“ oder „Ruhe“, Satzzeichen egal; Claude bekommt es nicht. Oder `./sprechen.sh --stopp` |
+| Alle Sitzungen auf allen Geräten still, etwa für ein Meeting | `/sprechen stumm`; zurück mit `/sprechen laut`. Claude bekommt beides nicht, siehe unten |
 | Weiterfragen | einfach eingeben: Die laufende Antwort spricht zu Ende, die nächste folgt danach |
 | Dienst beenden | `./sprechen.sh --beenden`; sonst endet er 20 Minuten nach dem letzten Auftrag (Eingaben ohne gesprochene Antwort zählen nicht) |
 
@@ -152,6 +153,24 @@ Antwort, die gerade klingt, auch aus einer anderen Sitzung: Man tippt „Psst“
 Fokus, gesprochen hat vielleicht ein anderes. Wartende Antworten anderer Sitzungen bleiben.
 Wechselt die sprechende Sitzung, beginnt die Antwort mit dem Namen des Projektordners, etwa
 „Aus Notizen.“ für einen Ordner `notizen`.
+
+**Stummschalter für alle Sitzungen:** `/sprechen stumm` in irgendeiner Sitzung legt die Datei
+`~/.cache/hoerbuch-generator/stumm` an, und zwar auf diesem Gerät, auf jedem Gerät aus
+`SPRECHEN_GERAETE` und auf dem Mac aus `SPRECHEN_ENTFERNT`. Was dort gerade klingt, bricht ab,
+und der Dienst leert seine Warteschlange. Solange die Datei liegt, spielt das Gerät nichts: Der
+Player unter der Sperre startet nicht, und der Dienst spielt selbst nichts ab, gleich aus
+welcher Sitzung und von welchem Rechner der Auftrag kommt, auch nicht über `./sprechen.sh` im
+Terminal. Ton für andere Geräte liefert er weiter. `/sprechen laut` löscht die Datei auf
+denselben Geräten. Den Modus der Sitzungen fasst keiner der beiden an. Wer vorher an war,
+spricht danach wieder, und eine Sitzung, die während der Stille beginnt, ist ebenso gedeckt.
+Der Prompt-Hook fängt beide Eingaben ab und nennt die Geräte, die er erreicht hat. Ein Gerät,
+das ssh nicht erreicht, etwa ein schlafendes, behält seinen alten Zustand; das steht in der
+Meldung, und `pruefen` zeigt ein stummes Gerät als Hinweis. Auf einem Gerät, auf dem der Player
+ohne `python3` und damit ohne Sperre spielt, bricht `/sprechen stumm` nicht ab, was dort gerade
+klingt; die nächste Antwort spielt es aber nicht mehr. Ein Dienst, der schon vor dem Update auf
+v0.15.0 lief, kennt die Datei bis zu seinem Neustart nicht (`./sprechen.sh --beenden`). Als
+Tastenkürzel:
+`taste-stumm` (siehe unten).
 
 **Warum „Stopp“ kein Stoppwort ist:** Mit „Stopp“ hält man oft Claude selbst an, etwa in einer
 Oberfläche, die Eingaben während einer laufenden Antwort weiterreicht. Das Wort soll dann bei
@@ -311,15 +330,16 @@ Beispiel oben nur vor dem Stop-Hook, liest er den Wert dort aus `settings.json`.
 Einstellungsdatei (oben, „Einstellungen“) braucht es diesen Umweg nicht; steht die Variable
 an beiden Stellen, gilt auch für das Stoppwort das Präfix vor dem Stop-Hook.
 
-## Tastenkürzel: Stopp und Nochmal
+## Tastenkürzel: Stopp, Nochmal und Stumm
 
-Zwei Befehle für Tastenkürzel auf dem Gerät, das spielt. Sie lesen kein stdin und brauchen nur
+Drei Befehle für Tastenkürzel auf dem Gerät, das spielt. Sie lesen kein stdin und brauchen nur
 `python3` (ab 3.9) und einen Klon dieses Repos auf dem Gerät:
 
 | Befehl | Wirkung |
 |---|---|
 | `python3 <REPO>/integrationen/claude-code/claude_sprechen.py taste-stopp` | beendet, was auf diesem Gerät klingt: den Player, der die Sperre hält, und, wo der Dienst läuft, dessen eigene Wiedergabe. Wartende Antworten bleiben |
-| `python3 <REPO>/integrationen/claude-code/claude_sprechen.py nochmal` | spielt die letzte Antwort, die dieses Gerät gespielt hat, noch einmal, unter derselben Sperre; kehrt sofort zurück |
+| `python3 <REPO>/integrationen/claude-code/claude_sprechen.py nochmal` | spielt die letzte Antwort, die dieses Gerät gespielt hat, noch einmal, unter derselben Sperre; kehrt sofort zurück. Bei stummem Gerät nicht |
+| `python3 <REPO>/integrationen/claude-code/claude_sprechen.py taste-stumm` | legt den Stummschalter um wie `/sprechen stumm` und `/sprechen laut`, je nachdem, ob dieses Gerät gerade stumm ist, und gibt die Meldung aus. Die Geräte liest es aus der Einstellungsdatei und aus `settings.json`; ssh muss ohne Rückfrage durchgehen |
 
 Für „Nochmal“ schreibt der Player unter der Sperre den Ton mit
 (`~/.cache/hoerbuch-generator/letzte.pcm`, rund 50 KB je Sekunde), ebenso der Dienst, was er
