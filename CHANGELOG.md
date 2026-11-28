@@ -6,6 +6,21 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.14.0] - 2026-11-28: Einstellungen je Gerät in einer Datei
+
+### Hinzugefügt
+
+- **Einstellungen je Gerät in einer Datei:** `~/.config/hoerbuch-generator/sprechen.conf` (unter
+  `XDG_CONFIG_HOME`, wenn gesetzt) nimmt die `SPRECHEN_*`-Variablen auf, eine Zeile `NAME=WERT` je
+  Variable. Bisher standen sie als Präfix vor bis zu vier Hook-Befehlen je Gerät, und `pruefen`
+  musste vergleichen, ob sie übereinstimmen. Mit der Datei sind die Hook-Befehle auf allen
+  Geräten gleich. Umgebung und Präfix gelten vor der Datei, bestehende Einträge wirken also
+  unverändert; das gilt auch für das Stoppwort, das ein Präfix vor dem Stop-Hook weiter aus
+  `settings.json` liest. `SPRECHEN_AUS` nimmt die Datei nicht an, weil sie das ganze Gerät stumm
+  machte. Werte sind wie in der Shell gequotet, `#` beginnt nur am Wortanfang einen Kommentar;
+  `~` und `$HOME` löst die Datei nicht auf. `pruefen` zeigt die Datei und meldet Zeilen, die
+  nicht gelten, als Fehler.
+
 ## [0.13.0] - 2026-11-28: Stopp und Nochmal auf Tastendruck
 
 ### Hinzugefügt
@@ -338,6 +353,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.14.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.14.0
 [0.13.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.13.0
 [0.12.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.12.0
 [0.11.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.11.0

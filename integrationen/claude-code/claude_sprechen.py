@@ -35,7 +35,9 @@ steht in README.md daneben; hier nur das Nötigste zum Lesen des Codes:
 - taste-stopp und nochmal sind für Tastenkürzel auf dem Gerät, das spielt: Sie wirken auf
   player.lock und LETZTE_PCM daneben, wo der Dienst läuft auch auf dessen eigene Wiedergabe.
 
-Einstellungen über Umgebungsvariablen:
+Einstellungen über Umgebungsvariablen oder je Gerät in ~/.config/hoerbuch-generator/sprechen.conf
+(XDG_CONFIG_HOME, eine Zeile NAME=WERT je Variable, außer SPRECHEN_AUS); die Umgebung gilt vor
+der Datei (konfig_anwenden):
     SPRECHEN_STIMME  Stimme aus stimmen/ (Standard: marketing, ein ruhiger Gesprächston)
     SPRECHEN_TEMPO   Sprechtempo 0.5 bis 2.0 (Standard: 1.1)
     SPRECHEN_LAUTER  Anhebung in dB, 0 bis 15 (Standard: 8). Die Stimmen liegen bei rund
@@ -315,6 +317,11 @@ FERN_PLAYER_NAME = (FERN_PATH + re.sub(r"exec (\w+)[^;]*;", r"printf %s \1;", SP
 HOOKS = {"Stop": "stop", "UserPromptSubmit": "prompt", "SessionStart": "start",
          "Notification": "notification"}
 HOOKS_NOETIG = ("Stop", "UserPromptSubmit")
+# Was in der Einstellungsdatei je Gerät stehen darf (konfig_pfad); SPRECHEN_AUS nicht, es gilt
+# für einen Dienst, nicht für das Gerät
+KONFIG_NAMEN = ("SPRECHEN_STIMME", "SPRECHEN_TEMPO", "SPRECHEN_LAUTER", "SPRECHEN_UNTERBRECHEN",
+                "SPRECHEN_ENTFERNT", "SPRECHEN_ENTFERNT_REPO", "SPRECHEN_PLAYER",
+                "SPRECHEN_GERAETE", "SPRECHEN_LEERLAUF")
 # Variablen, die zwischen den Hooks gleich sein müssen, die sie nutzen; True: sonst ein Fehler.
 # Der Prompt-Hook braucht den Fernbetrieb für den Stopp auf dem Mac, die Gerätewahl nicht
 VERGLEICH = (
@@ -764,16 +771,18 @@ def stopp_geraete() -> list[str]:
     """Geräte für das Stoppwort. Die Gerätewahl braucht nur der Stop-Hook, deshalb steht
     SPRECHEN_GERAETE oft nur vor ihm; fehlt die Variable im Prompt-Hook, gilt sein Wert aus
     settings.json."""
-    if "SPRECHEN_GERAETE" in os.environ:
+    if "SPRECHEN_GERAETE" in os.environ and "SPRECHEN_GERAETE" not in AUS_DATEI:
         return geraete()
+    # Wie im Stop-Hook gilt die Einstellungsdatei erst nach settings.json
     try:
         daten = json.loads(settings_pfad().read_text(encoding="utf-8"))
         if not isinstance(daten, dict):
-            return []
+            return geraete()
         umgebung, _, praefixe = hooks_lesen(daten)
     except (OSError, ValueError, AttributeError, TypeError):
-        return []
-    return {**umgebung, **praefixe.get("Stop", {})}.get("SPRECHEN_GERAETE", "").split()
+        return geraete()
+    return {**umgebung, **praefixe.get("Stop", {})}.get(
+        "SPRECHEN_GERAETE", os.environ.get("SPRECHEN_GERAETE", "")).split()
 
 
 def fremd_stoppen(weitere: list[tuple[str, list[str]]] | None = None,
@@ -923,6 +932,100 @@ def hinweis(eingabe: dict) -> str:
     return satz
 
 
+# --- Einstellungen je Gerät ----------------------------------------------------------------
+
+def konfig_pfad() -> Path:
+    basis = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(basis) / "hoerbuch-generator" / "sprechen.conf"
+
+
+def konfig_lesen(pfad: Path) -> tuple[dict[str, str], list[str]]:
+    """Werte aus der Einstellungsdatei und Meldungen zu Zeilen, die nicht gelten. Eine Zeile
+    je Variable, NAME=WERT, Werte wie in der Shell gequotet; # beginnt einen Kommentar. Ohne
+    Datei leer."""
+    try:
+        if pfad.exists() and not pfad.is_file():
+            # Eine Pipe an dieser Stelle hielte den Hook beim Lesen fest
+            return {}, [f"{pfad} ist keine Datei"]
+        text = pfad.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {}, []
+    except (OSError, UnicodeDecodeError) as e:
+        return {}, [f"{pfad} nicht lesbar: {e}"]
+    werte: dict[str, str] = {}
+    meldungen = []
+    for nummer, zeile in enumerate(text.splitlines(), 1):
+        zeile = zeile.strip()
+        if not zeile or zeile.startswith("#"):
+            continue
+        name, gleich, wert = zeile.partition("=")
+        name = name.strip()
+        if name == "SPRECHEN_AUS":
+            meldungen.append(f"Zeile {nummer}: SPRECHEN_AUS gehört in die Umgebung des "
+                             "Dienstes ohne Nutzer, die Datei machte das ganze Gerät stumm")
+            continue
+        if not gleich or name not in KONFIG_NAMEN:
+            meldungen.append(f"Zeile {nummer}: {name or zeile} ist keine Einstellung "
+                             f"({', '.join(KONFIG_NAMEN)})")
+            continue
+        if "\0" in wert:
+            # os.environ nähme den Wert nicht, der Hook endete mit einem Traceback
+            meldungen.append(f"Zeile {nummer}: {name} enthält ein Nullzeichen")
+            continue
+        try:
+            teile = shlex.split(_ohne_kommentar(wert))
+            # Ein Wort, auch gequotet mit Leerzeichen ('a b'), gilt wie geschrieben; mehrere
+            # bleiben ein Befehl, den SPRECHEN_PLAYER wieder zerlegt
+            werte[name] = teile[0] if len(teile) == 1 else shlex.join(teile)
+        except ValueError as e:
+            meldungen.append(f"Zeile {nummer}: {name} nicht lesbar ({e})")
+    return werte, meldungen
+
+
+def _ohne_kommentar(wert: str) -> str:
+    """Wert bis vor den Kommentar. # beginnt ihn wie in der Shell nur am Anfang eines Worts
+    und außerhalb von Anführungszeichen; shlex sähe ihn auch mitten im Wort (a#b)."""
+    offen = ""  # offenes Anführungszeichen
+    maskiert = False
+    wortanfang = True
+    for i, zeichen in enumerate(wert):
+        davor, wortanfang = wortanfang, False
+        if maskiert:
+            maskiert = False
+        elif offen:
+            if zeichen == offen:
+                offen = ""
+            elif zeichen == "\\" and offen == '"':
+                maskiert = True
+        elif zeichen == "\\":
+            maskiert = True
+        elif zeichen in "'\"":
+            offen = zeichen
+        elif zeichen == "#" and davor:
+            return wert[:i]
+        elif zeichen.isspace():
+            wortanfang = True
+    return wert
+
+
+# Namen, die konfig_anwenden aus der Datei gesetzt hat: Für das Stoppwort gilt das Präfix des
+# Stop-Hooks davor (stopp_geraete)
+AUS_DATEI: set[str] = set()
+
+
+def konfig_anwenden(melden: bool = True) -> None:
+    """Einstellungsdatei als Vorgabe in die Umgebung: Was schon gesetzt ist (Präfix im
+    Hook-Befehl, env in settings.json), gilt vor der Datei. Ohne melden schweigt es zu Zeilen,
+    die nicht gelten; pruefen nennt sie selbst."""
+    werte, meldungen = konfig_lesen(konfig_pfad())
+    for meldung in meldungen if melden else ():
+        log.error("Einstellungen: %s", meldung)
+    for name, wert in werte.items():
+        if name not in os.environ:
+            os.environ[name] = wert
+            AUS_DATEI.add(name)
+
+
 # --- pruefen -----------------------------------------------------------------------------
 
 def settings_pfad() -> Path:
@@ -966,15 +1069,16 @@ def hooks_lesen(daten: dict) -> tuple[dict[str, str], dict[str, list[str]],
     return umgebung, eingetragen, praefixe
 
 
-def _abweichungen(umgebung: dict[str, str], praefixe: dict[str, dict[str, str]]
-                  ) -> list[tuple[str, bool]]:
+def _abweichungen(umgebung: dict[str, str], praefixe: dict[str, dict[str, str]],
+                  datei: dict[str, str] | None = None) -> list[tuple[str, bool]]:
     """Variablen, die zwischen den Hooks abweichen, die sie nutzen, als Text und ob das ein
-    Problem ist. Verglichen wird env aus settings.json mit dem Präfix darüber, je Hook."""
+    Problem ist. Je Hook gilt die Einstellungsdatei, darüber env aus settings.json, darüber
+    das Präfix."""
     meldungen = []
     for namen, ereignisse, problem in VERGLEICH:
         dabei = [e for e in ereignisse if e in praefixe]
         for name in namen:
-            werte = {e: {**umgebung, **praefixe[e]}.get(name) for e in dabei}
+            werte = {e: {**(datei or {}), **umgebung, **praefixe[e]}.get(name) for e in dabei}
             if len(set(werte.values())) > 1:
                 meldungen.append((f"{name} weicht ab: " + ", ".join(
                     f"{e} {w if w is not None else '(nicht gesetzt)'}"
@@ -1039,6 +1143,11 @@ def pruefen() -> int:
         melden("Hooks", f"{pfad} nicht lesbar: {e}", True)
         daten = {}
     umgebung, eingetragen, praefixe = hooks_lesen(daten)
+    datei, meldungen = konfig_lesen(konfig_pfad())
+    if datei or meldungen:
+        melden("Datei", f"{konfig_pfad()}: {len(datei)} Einstellung(en)")
+    for meldung in meldungen:
+        melden("Datei", meldung, True)
     if daten:
         for ereignis, unterbefehl in HOOKS.items():
             gefunden = eingetragen.get(ereignis, [])
@@ -1051,10 +1160,11 @@ def pruefen() -> int:
                 melden("Hooks", f"{ereignis} fehlt" +
                        ("" if ereignis in HOOKS_NOETIG else " (optional)"),
                        ereignis in HOOKS_NOETIG)
-        for text, problem in _abweichungen(umgebung, praefixe):
+        for text, problem in _abweichungen(umgebung, praefixe, datei):
             melden("Hooks", text, problem, hinweis=True)
     # Wie beim Stop-Hook: Claude Code gibt ihm seine Umgebung samt env aus settings.json, das
-    # Präfix vor dem Befehl gilt vor beidem. Die Umgebung hier steht für die von Claude Code
+    # Präfix vor dem Befehl gilt vor beidem. Die Umgebung hier steht für die von Claude Code;
+    # die Einstellungsdatei hat main schon als Vorgabe eingetragen
     os.environ.update({**umgebung, **praefixe.get("Stop", {})})
     aus = os.environ.get("SPRECHEN_AUS") == "1"
     for name in sorted(k for k in os.environ if k.startswith("SPRECHEN_")):
@@ -1144,6 +1254,7 @@ def main() -> int:
         return 0
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format=LOG_FORMAT,
                         datefmt=LOG_ZEIT)
+    konfig_anwenden(melden=args.ereignis != "pruefen")
 
     if args.ereignis == "pruefen":
         return pruefen()

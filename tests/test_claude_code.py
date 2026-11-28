@@ -932,6 +932,137 @@ class SperreAmPlayer(unittest.TestCase):
             self.assertEqual(lauf.stdout.strip(), "nein" if name == "ohne" else "ja", name)
 
 
+class Einstellungsdatei(unittest.TestCase):
+    """~/.config/hoerbuch-generator/sprechen.conf: Vorgaben je Gerät, die Umgebung gilt davor."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="konfig"))
+        self.datei = self.tmp / ".config" / "hoerbuch-generator" / "sprechen.conf"
+        self.datei.parent.mkdir(parents=True)
+        self.protokoll = self.tmp / "aufruf.txt"
+        (self.tmp / "sprechen.sh").write_text(
+            f'printf "%s\\n" "$*" > "{self.protokoll}"\ncat >> "{self.protokoll}"\n',
+            encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _stop(self, env: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(SKRIPT), "stop"],
+                              input=json.dumps({"last_assistant_message": "<!-- sprechen: Ja. -->"}),
+                              text=True, capture_output=True, timeout=30,
+                              env={"HOME": str(self.tmp), "PATH": "/usr/bin:/bin",
+                                   "HOERBUCH_GENERATOR": str(self.tmp), **(env or {})})
+
+    def test_datei_setzt_vorgaben_und_die_umgebung_gilt_davor(self):
+        self.datei.write_text("# Stimme dieses Geräts\nSPRECHEN_STIMME=dozent\n"
+                              "SPRECHEN_LAUTER = 12  # neben Musik\n", encoding="utf-8")
+        lauf = self._stop()
+        self.assertEqual(lauf.returncode, 0)
+        self.assertEqual(self.protokoll.read_text(encoding="utf-8"),
+                         "-v dozent -t 1.1 --lauter 12 -\nJa.")
+        self._stop({"SPRECHEN_STIMME": "erzaehler"})
+        self.assertTrue(self.protokoll.read_text(encoding="utf-8").startswith("-v erzaehler "))
+
+    def test_werte_wie_in_der_shell(self):
+        import claude_sprechen
+        self.datei.write_text(
+            "SPRECHEN_GERAETE='hier notebook'\n"
+            'SPRECHEN_ENTFERNT_REPO="~/repos/hoerbuch-generator"\n'
+            "SPRECHEN_PLAYER=sh -c 'cat > /dev/null'\n"
+            "SPRECHEN_UNTERBRECHEN=\n", encoding="utf-8")
+        werte, meldungen = claude_sprechen.konfig_lesen(self.datei)
+        self.assertEqual(meldungen, [])
+        self.assertEqual(werte["SPRECHEN_GERAETE"], "hier notebook")
+        self.assertEqual(werte["SPRECHEN_ENTFERNT_REPO"], "~/repos/hoerbuch-generator")
+        self.assertEqual(werte["SPRECHEN_UNTERBRECHEN"], "")
+        import shlex
+        self.assertEqual(shlex.split(werte["SPRECHEN_PLAYER"]), ["sh", "-c", "cat > /dev/null"])
+
+    def test_falsche_zeilen_gelten_nicht_und_brechen_nichts_ab(self):
+        import claude_sprechen
+        self.datei.write_text("SPRECHEN_AUS=1\nSPRECHEN_STIMM=dozent\nkeine Zuweisung\n"
+                              "SPRECHEN_STIMME='offen\nSPRECHEN_TEMPO=1.3\n", encoding="utf-8")
+        werte, meldungen = claude_sprechen.konfig_lesen(self.datei)
+        self.assertEqual(werte, {"SPRECHEN_TEMPO": "1.3"})
+        self.assertEqual(len(meldungen), 4, meldungen)
+        self.assertIn("SPRECHEN_AUS gehört in die Umgebung", meldungen[0])
+        lauf = self._stop()
+        self.assertEqual(lauf.returncode, 0)
+        # SPRECHEN_AUS aus der Datei macht nicht stumm, der Rest gilt
+        self.assertEqual(self.protokoll.read_text(encoding="utf-8"),
+                         "-v marketing -t 1.3 --lauter 8 -\nJa.")
+        self.assertIn("Einstellungen: Zeile 1", lauf.stderr)
+
+    def test_ohne_datei_wie_bisher(self):
+        self.datei.unlink(missing_ok=True)
+        lauf = self._stop()
+        self.assertEqual((lauf.returncode, lauf.stderr), (0, ""))
+        self.assertEqual(self.protokoll.read_text(encoding="utf-8"),
+                         "-v marketing -t 1.1 --lauter 8 -\nJa.")
+
+    def test_unlesbare_datei(self):
+        import claude_sprechen
+        self.datei.write_bytes(b"\xff\xfe")
+        werte, meldungen = claude_sprechen.konfig_lesen(self.datei)
+        self.assertEqual(werte, {})
+        self.assertIn("nicht lesbar", meldungen[0])
+        self.datei.unlink()
+        self.datei.mkdir()
+        werte, meldungen = claude_sprechen.konfig_lesen(self.datei)
+        self.assertEqual(werte, {})
+        self.assertIn("keine Datei", meldungen[0])
+
+    def test_kommentar_nur_am_wortanfang(self):
+        import claude_sprechen
+        # Mit BOM, wie ein Editor unter Windows die Datei schreibt
+        self.datei.write_text("﻿SPRECHEN_ENTFERNT=mac#2 # Kommentar\n"
+                              "SPRECHEN_PLAYER='a # b' c\\ #d\n"
+                              "SPRECHEN_STIMME=#nur Kommentar\n", encoding="utf-8")
+        werte, meldungen = claude_sprechen.konfig_lesen(self.datei)
+        self.assertEqual(meldungen, [])
+        self.assertEqual(werte, {"SPRECHEN_ENTFERNT": "mac#2",
+                                 "SPRECHEN_PLAYER": "'a # b' 'c #d'",
+                                 "SPRECHEN_STIMME": ""})
+
+    def test_nullzeichen_endet_nicht_mit_traceback(self):
+        self.datei.write_bytes(b"SPRECHEN_STIMME=a\x00b\nSPRECHEN_TEMPO=1.3\n")
+        lauf = self._stop()
+        self.assertEqual(lauf.returncode, 0, lauf.stderr)
+        self.assertIn("Nullzeichen", lauf.stderr)
+        self.assertEqual(self.protokoll.read_text(encoding="utf-8"),
+                         "-v marketing -t 1.3 --lauter 8 -\nJa.")
+
+    def test_stoppwort_nimmt_das_praefix_des_stop_hooks_vor_der_datei(self):
+        import claude_sprechen
+        self.datei.write_text("SPRECHEN_GERAETE='aus-datei'\n", encoding="utf-8")
+        (self.tmp / ".claude").mkdir()
+        settings = self.tmp / ".claude" / "settings.json"
+        skript = "python3 x/claude_sprechen.py"
+        settings.write_text(json.dumps({"hooks": {
+            "Stop": [{"hooks": [{"type": "command",
+                                 "command": f"SPRECHEN_GERAETE='notebook mac' {skript} stop"}]}],
+            "UserPromptSubmit": [{"hooks": [{"type": "command",
+                                             "command": f"{skript} prompt"}]}]}}),
+            encoding="utf-8")
+        umgebung = {"HOME": str(self.tmp), "PATH": "/usr/bin:/bin"}
+        with mock.patch.dict(os.environ, umgebung, clear=True), \
+                mock.patch.object(claude_sprechen, "AUS_DATEI", set()):
+            claude_sprechen.konfig_anwenden()
+            self.assertEqual(os.environ["SPRECHEN_GERAETE"], "aus-datei")
+            self.assertEqual(claude_sprechen.stopp_geraete(), ["notebook", "mac"])
+            # Ohne Präfix gilt die Datei, ohne lesbare settings.json ebenso
+            settings.write_text("{}", encoding="utf-8")
+            self.assertEqual(claude_sprechen.stopp_geraete(), ["aus-datei"])
+            settings.unlink()
+            self.assertEqual(claude_sprechen.stopp_geraete(), ["aus-datei"])
+        # Die Umgebung des Prompt-Hooks selbst gilt vor beidem
+        with mock.patch.dict(os.environ, {**umgebung, "SPRECHEN_GERAETE": "hier"}, clear=True), \
+                mock.patch.object(claude_sprechen, "AUS_DATEI", set()):
+            claude_sprechen.konfig_anwenden()
+            self.assertEqual(claude_sprechen.stopp_geraete(), ["hier"])
+
+
 class Tastenkuerzel(unittest.TestCase):
     """taste-stopp und nochmal auf dem Gerät, das spielt; HOME im Testordner, dort liegen
     player.lock und letzte.pcm."""
@@ -1267,6 +1398,34 @@ class Pruefen(unittest.TestCase):
         self.assertIn("Hinweis: SPRECHEN_STIMME weicht ab", aus)
         self.assertNotIn("SPRECHEN_GERAETE weicht ab", aus)
         self.assertIn("Ergebnis: 1 Problem(e) (1 Hinweis)", aus)
+
+    def test_einstellungsdatei_statt_praefix(self):
+        # Gleiche Hook-Befehle auf jedem Gerät, die Werte stehen in der Datei
+        skript = "python3 $HOME/hg/integrationen/claude-code/claude_sprechen.py"
+        self._settings({"Stop": self._hook(f"{skript} stop"),
+                        "UserPromptSubmit": self._hook(f"{skript} prompt"),
+                        "Notification": self._hook(f"{skript} notification")})
+        datei = self.tmp / ".config" / "hoerbuch-generator" / "sprechen.conf"
+        datei.parent.mkdir(parents=True)
+        datei.write_text("SPRECHEN_ENTFERNT=mac\nSPRECHEN_GERAETE='buero'\n", encoding="utf-8")
+        rc, aus = self._pruefen()
+        self.assertEqual(rc, 0, aus)
+        self.assertIn(f"Datei     {datei}: 2 Einstellung(en)", aus)
+        self.assertIn("Variable  SPRECHEN_GERAETE=buero", aus)
+        self.assertIn("Rechnen   mac: ssh ok", aus)
+        self.assertNotIn("weicht ab", aus)
+        # Ein Präfix gilt vor der Datei, und dann weicht der Hook ab
+        self._settings({"Stop": self._hook(f"SPRECHEN_ENTFERNT=rechner {skript} stop"),
+                        "UserPromptSubmit": self._hook(f"{skript} prompt")})
+        rc, aus = self._pruefen()
+        self.assertIn("FEHLER: SPRECHEN_ENTFERNT weicht ab: Stop rechner, UserPromptSubmit mac", aus)
+        # Eine Zeile, die nicht gilt, ist ein Fehler und kommt nur einmal
+        datei.write_text("SPRECHEN_ENTFERNT=mac\nSPRECHEN_GERAET=buero\n", encoding="utf-8")
+        lauf = subprocess.run([sys.executable, str(SKRIPT), "pruefen"], stdin=subprocess.DEVNULL,
+                              text=True, capture_output=True, env=self.env, timeout=30)
+        self.assertIn("Datei     FEHLER: Zeile 2: SPRECHEN_GERAET ist keine Einstellung",
+                      lauf.stdout)
+        self.assertNotIn("Zeile 2", lauf.stderr)
 
     def test_fehlender_stop_hook_und_fehlende_settings(self):
         self._settings({"UserPromptSubmit": self._hook("python3 x/claude_sprechen.py prompt")})

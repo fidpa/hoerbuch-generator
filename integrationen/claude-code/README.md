@@ -160,8 +160,31 @@ Ausgabe ab; `SPRECHEN_UNTERBRECHEN=1` stellt das wieder her.
 
 ## Einstellungen
 
-Über Umgebungsvariablen, etwa vor dem Befehl im Hook (`SPRECHEN_LAUTER=12 <REPO>/.venv/bin/python …`)
-oder unter `env` in den Einstellungen von Claude Code:
+Über eine Datei je Gerät oder über Umgebungsvariablen, etwa vor dem Befehl im Hook
+(`SPRECHEN_LAUTER=12 <REPO>/.venv/bin/python …`) oder unter `env` in den Einstellungen von
+Claude Code.
+
+**Einstellungsdatei:** `~/.config/hoerbuch-generator/sprechen.conf` (unter `XDG_CONFIG_HOME`, wenn
+gesetzt), eine Zeile `NAME=WERT` je Variable, Werte wie in der Shell gequotet, `#` beginnt einen
+Kommentar:
+
+```sh
+# Server ohne MLX: der Mac rechnet, gespielt wird auf dem zuletzt benutzten Gerät
+SPRECHEN_ENTFERNT=<MAC>
+SPRECHEN_ENTFERNT_REPO='~/<Pfad des Repos auf dem Mac>'
+SPRECHEN_GERAETE='notebook <MAC>'
+```
+
+Dann sind die Hook-Befehle auf allen Geräten gleich, ohne Präfix, und Stop-, Prompt- und
+Notification-Hook lesen dieselben Werte. Eine Variable in der Umgebung oder als Präfix gilt vor
+der Datei. `SPRECHEN_AUS` gehört nicht in die Datei, sie machte das ganze Gerät stumm; sie bleibt
+in der Umgebung des Dienstes ohne Nutzer. Zeilen, die nicht gelten (unbekannter Name, offenes
+Anführungszeichen, `export` davor), meldet der Hook auf stderr und `pruefen` als Fehler; die
+übrigen gelten weiter.
+
+Die Datei liest keine Shell: `~` und `$HOME` bleiben stehen, wie sie geschrieben sind. Für
+`SPRECHEN_ENTFERNT_REPO` ist das richtig, `~/` meint dort das Home auf dem Mac. Einen eigenen
+Player in `SPRECHEN_PLAYER` mit vollem Pfad angeben, `~/bin/player` fände der Hook nicht.
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
@@ -284,7 +307,9 @@ Mac, der rechnet, zugleich eine Antwort seiner eigenen Sitzungen über den Diens
 Dienst die Sperre nicht, beide können sich dort überlagern.
 
 Für das Stoppwort fragt der Prompt-Hook dieselben Geräte. Steht `SPRECHEN_GERAETE` wie im
-Beispiel oben nur vor dem Stop-Hook, liest er den Wert dort aus `settings.json`.
+Beispiel oben nur vor dem Stop-Hook, liest er den Wert dort aus `settings.json`. Mit der
+Einstellungsdatei (oben, „Einstellungen“) braucht es diesen Umweg nicht; steht die Variable
+an beiden Stellen, gilt auch für das Stoppwort das Präfix vor dem Stop-Hook.
 
 ## Tastenkürzel: Stopp und Nochmal
 
