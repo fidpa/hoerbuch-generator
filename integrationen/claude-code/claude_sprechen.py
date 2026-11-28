@@ -39,7 +39,10 @@ Einstellungen über Umgebungsvariablen:
 
 Abbrechen: Eine neue Eingabe lässt die laufende Antwort zu Ende sprechen, die nächste reiht
 sich dahinter ein. Besteht eine Eingabe nur aus einem Stoppwort (STOPPWORTE, etwa „Psst“),
-endet die Ausgabe der Sitzung, und Claude bekommt die Eingabe nicht (decision block).
+endet die Ausgabe der Sitzung, und Claude bekommt die Eingabe nicht (decision block). Läuft
+für die eigene Sitzung nichts, trifft das Stoppwort, was gerade klingt: die Wiedergabe einer
+anderen Sitzung hier, was der Dienst selbst abspielt, und auf jedem Gerät aus SPRECHEN_GERAETE
+den Player, der dort die Sperre hält. Wartende Antworten bleiben.
 
 Mehrere Sitzungen: Stop- und Prompt-Hook geben die session_id als --quelle mit, ein Stopp
 trifft also nur die Ausgabe der eigenen Sitzung. Dazu kommt „Aus <Projekt>.“ als --ansage;
@@ -66,8 +69,12 @@ einem anderen Mac läuft und nur die Oberfläche hier ist (Terminal per ssh, T3 
     SPRECHEN_LEERLAUF  Sekunden; ist jedes Gerät länger unbenutzt, bleibt die Antwort stumm
                        (Standard: 1800). Dann wird woanders gearbeitet, etwa am Handy.
 Auf einem anderen Gerät spielt paplay, unter macOS ffmpeg über AudioToolbox, sonst ffplay,
-aufgerufen über ssh. Ohne SPRECHEN_ENTFERNT rechnet dieses Gerät selbst; fällt die Wahl auf
-"hier", spielt der Dienst wie gewohnt.
+aufgerufen über ssh. Eine Sperre dort (~/.cache/hoerbuch-generator/player.lock, braucht
+python3) hält Antworten mehrerer Rechner in der Reihe, die auf demselben Gerät landen; der
+Player des Fernbetriebs hier nimmt dieselbe. Ohne SPRECHEN_ENTFERNT rechnet dieses Gerät
+selbst; fällt die Wahl auf "hier", spielt der Dienst wie gewohnt, und zwar ohne diese Sperre.
+Das Stoppwort liest SPRECHEN_GERAETE aus dem Stop-Hook in settings.json, wenn der Prompt-Hook
+die Variable nicht hat.
 
 Hooks laufen außerhalb einer Bash-Sandbox; nur dort stehen Metal und Audio zur Verfügung.
 Fehler gehen nach stderr und brechen die Sitzung nie ab (Exit 0). Nur Standardbibliothek.
@@ -179,8 +186,8 @@ LEERLAUF = (
     "--object-path /org/gnome/Mutter/IdleMonitor/Core "
     "--method org.gnome.Mutter.IdleMonitor.GetIdletime | awk '{print int($2/1000)}'; fi")
 # Player auf einem anderen Gerät; über ssh fehlt Homebrew im PATH
-FERN_PLAYER = (
-    'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; '
+FERN_PATH = 'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; '
+SPIELER_WAHL = (
     "if command -v paplay >/dev/null 2>&1; then "
     "exec paplay --raw --rate=24000 --channels=1 --format=s16le; "
     'elif [ "$(uname)" = Darwin ] && command -v ffmpeg >/dev/null 2>&1; then '
@@ -188,8 +195,76 @@ FERN_PLAYER = (
     "elif command -v ffplay >/dev/null 2>&1; then "
     "exec ffplay -nodisp -nostats -autoexit -loglevel error -f s16le -ar 24000 -ch_layout mono -; "
     "else echo 'kein Player (paplay, ffmpeg, ffplay)' >&2; exit 127; fi")
-# Für pruefen: dieselbe Suche, nur den Namen ausgeben statt abzuspielen
-FERN_PLAYER_NAME = re.sub(r"exec (\w+)[^;]*;", r"echo \1;", FERN_PLAYER)
+# Sperre auf dem Gerät, das spielt: Antworten mehrerer Rechner, die dort landen, klängen sonst
+# übereinander. Mehrere Rechner rechnen zwar auf demselben Mac, nacheinander; die Puffer von
+# ssh fassen aber bis zu zwei MB, rund 40 Sekunden Ton. macOS hat kein flock(1), deshalb
+# Python. Gesperrt wird erst, wenn Ton ankommt: Ein Player, der auf einen noch nicht
+# gerechneten Auftrag wartet, hielte sonst die Sperre, während der Mac den Auftrag davor nicht
+# loswird. Der Player erbt die Sperre und gibt sie mit seinem Ende frei; die Datei nennt seine
+# PID und den Beginn für das Stoppwort. Gewartet wird in Runden statt blockierend: Ist ssh
+# fort (Stopp beim Warten), wechselt der Elternprozess, und der Wartende endet sofort still.
+# Reißt die Verbindung ohne Abbau ab (Gerät schlief ein), wartet der Player ohne Ende auf
+# Ton, und sshd merkt es erst nach Stunden; ein Halter älter als SPERRE_ALTER gilt deshalb als
+# hängend und wird beendet. Ohne Sperrdatei spielt der Player ohne Sperre.
+SPERRE_DATEI = "$HOME/.cache/hoerbuch-generator/player.lock"
+SPERRE_ALTER = 600  # Sekunden; eine gesprochene Antwort dauert selten eine Minute
+SPERRE_PY = (
+    "import fcntl, os, select, sys, time\n"
+    "eltern = os.getppid()\n"
+    "select.select([0], [], [])\n"
+    "try:\n"
+    "    os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)\n"
+    "    f = open(sys.argv[1], 'a+')\n"
+    "except OSError:\n"
+    "    f = None\n"
+    "while f is not None:\n"
+    "    try:\n"
+    "        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+    "        break\n"
+    "    except OSError:\n"
+    "        pass\n"
+    "    if os.getppid() != eltern or eltern == 1:\n"
+    "        sys.exit(0)\n"
+    "    try:\n"
+    "        f.seek(0)\n"
+    "        pid, seit = f.read().split()[:2]\n"
+    f"        if time.time() - float(seit) > {SPERRE_ALTER}:\n"
+    "            os.kill(int(pid), 15)\n"
+    "    except (OSError, ValueError):\n"
+    "        pass\n"
+    "    time.sleep(0.2)\n"
+    "if os.getppid() != eltern or eltern == 1:\n"
+    "    sys.exit(0)\n"
+    "if f is not None:\n"
+    "    f.seek(0); f.truncate(); f.write('%d %d' % (os.getpid(), time.time())); f.flush()\n"
+    "    os.set_inheritable(f.fileno(), True)\n"
+    "os.execvp(sys.argv[2], sys.argv[2:])\n")
+# Unter macOS ohne Command Line Tools ist /usr/bin/python3 nur ein Platzhalter: Er scheitert
+# und öffnet bei jedem Aufruf den Dialog zur Installation. xcode-select -p fragt, ohne ihn
+SPERRE_DA = ('{ [ "$(uname)" != Darwin ] || [ "$(command -v python3)" != /usr/bin/python3 ] '
+             "|| xcode-select -p >/dev/null 2>&1; } && python3 -c 'import fcntl' >/dev/null 2>&1")
+FERN_PLAYER = (
+    f'{FERN_PATH}S="{SPERRE_DATEI}"; '
+    f"if {SPERRE_DA}; then exec python3 -c {shlex.quote(SPERRE_PY)} \"$S\" "
+    f"sh -c {shlex.quote(SPIELER_WAHL)}; fi; {SPIELER_WAHL}")
+# Stoppwort ohne eigene Ausgabe: den Player beenden, der dort gerade die Sperre hält. Ist sie
+# frei, klingt dort nichts, und die PID in der Datei gehört einem beendeten Player
+STOPP_PY = (
+    "import fcntl, os, signal, sys\n"
+    "f = open(sys.argv[1])\n"
+    "try:\n"
+    "    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+    "except OSError:\n"
+    "    try:\n"
+    "        os.kill(int(f.read().split()[0]), signal.SIGTERM)\n"
+    "    except (OSError, ValueError, IndexError):\n"
+    "        pass\n")
+FERN_STOPP = (f'{FERN_PATH}S="{SPERRE_DATEI}"; if [ -f "$S" ] && {SPERRE_DA}; then '
+              f'python3 -c {shlex.quote(STOPP_PY)} "$S"; fi; true')
+# Für pruefen: dieselbe Suche, nur den Namen ausgeben statt abzuspielen, dazu die Sperre
+FERN_PLAYER_NAME = (FERN_PATH + re.sub(r"exec (\w+)[^;]*;", r"printf %s \1;", SPIELER_WAHL)
+                    + f"; if {SPERRE_DA}; then echo ' mit Sperre'; "
+                    "else echo ' ohne Sperre (kein python3)'; fi")
 # Einträge in settings.json und der Unterbefehl, den jedes Ereignis aufruft
 HOOKS = {"Stop": "stop", "UserPromptSubmit": "prompt", "SessionStart": "start",
          "Notification": "notification"}
@@ -418,6 +493,12 @@ def zustand_ordner() -> Path:
     return Path(basis) / "hoerbuch-generator"
 
 
+def player_sperre() -> Path:
+    """SPERRE_DATEI auf diesem Gerät. Nicht unter XDG_RUNTIME_DIR: FERN_PLAYER kommt über
+    ssh, und dort fehlt die Variable oft."""
+    return Path.home() / ".cache" / "hoerbuch-generator" / "player.lock"
+
+
 def _kennung(quelle: str) -> str:
     return hashlib.sha256(quelle.encode()).hexdigest()[:16] if quelle else "ohne"
 
@@ -464,6 +545,11 @@ def abspielen(auftrag: dict) -> int:
         if not player:
             log.error("kein Player (paplay, pw-play, aplay, ffmpeg, ffplay, SPRECHEN_PLAYER)")
             return 1
+        name = player[0]
+        if geraet in (None, HIER):
+            # Dieselbe Sperre wie FERN_PLAYER: Spielt ein anderer Rechner über ssh auf diesem
+            # Gerät, bleiben beide in der Reihe, und ein Stoppwort trifft hier den Halter
+            player = [sys.executable, "-c", SPERRE_PY, str(player_sperre()), *player]
         with open(ordner / "wiedergabe.lock", "w") as sperre:
             # Zwei Sitzungen auf diesem Gerät: Der Mac liefert schneller, als der Player
             # spielt, und beide Antworten klängen sonst übereinander
@@ -496,7 +582,7 @@ def abspielen(auftrag: dict) -> int:
                 if spieler.returncode == 0 and ssh.returncode != 0:
                     log.error("sprechen.sh auf %s endete mit %s", ziel or HIER, ssh.returncode)
                 elif spieler.returncode != 0:
-                    log.error("Player %s endete mit %s", player[0], spieler.returncode)
+                    log.error("Player %s endete mit %s", name, spieler.returncode)
                 else:
                     log.info("Wiedergabe auf %s fertig nach %.1f s", geraet or HIER,
                              time.monotonic() - beginn)
@@ -572,18 +658,92 @@ def ist_stoppwort(prompt: str) -> bool:
     return re.sub(r"(.)\1{2,}", r"\1\1", wort) in STOPPWORTE
 
 
-def ausgabe_stoppen(sitzung: str, quelle: list[str], entfernt: str) -> None:
+def _stopp_hier(args: list[str], frist: float) -> str:
+    """sprechen.sh --stopp mit --sonst-aktuell; liefert, was der Dienst getroffen hat."""
+    skript = sprechen_sh()
+    try:
+        lauf = subprocess.run(["/bin/bash", str(skript), "--stopp", *args], text=True,
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=frist)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.error("sprechen.sh scheiterte: %s", e)
+        return ""
+    if lauf.returncode != 0:
+        log.error("sprechen.sh: %s", lauf.stderr.strip())
+    return lauf.stdout.strip()
+
+
+def stopp_geraete() -> list[str]:
+    """Geräte für das Stoppwort. Die Gerätewahl braucht nur der Stop-Hook, deshalb steht
+    SPRECHEN_GERAETE oft nur vor ihm; fehlt die Variable im Prompt-Hook, gilt sein Wert aus
+    settings.json."""
+    if "SPRECHEN_GERAETE" in os.environ:
+        return geraete()
+    try:
+        daten = json.loads(settings_pfad().read_text(encoding="utf-8"))
+        if not isinstance(daten, dict):
+            return []
+        umgebung, _, praefixe = hooks_lesen(daten)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return []
+    return {**umgebung, **praefixe.get("Stop", {})}.get("SPRECHEN_GERAETE", "").split()
+
+
+def fremd_stoppen(weitere: list[tuple[str, list[str]]] | None = None,
+                  ende: float | None = None) -> None:
+    """Stoppwort, während für die eigene Sitzung nichts läuft: beenden, was gerade klingt, also
+    hier und auf jedem Gerät der Gerätewahl den Player, der die Sperre hält. Wartende bleiben.
+    weitere sind Befehle (Ziel, Befehl), die gleichzeitig mit denen für die Geräte laufen; ende
+    ist der Zeitpunkt (time.monotonic), bis zu dem alle fertig sein müssen."""
+    befehle = [(g, ["ssh", *SSH_OPTIONEN, g, FERN_STOPP]) for g in stopp_geraete() if g != HIER]
+    if player_sperre().is_file():
+        # Auch ohne "hier" in der Gerätewahl: Eine andere Sitzung oder ein anderer Rechner
+        # kann hier spielen
+        befehle.insert(0, (HIER, [sys.executable, "-c", STOPP_PY, str(player_sperre())]))
+    laeufe = []
+    for geraet, befehl in [*befehle, *(weitere or [])]:
+        try:
+            laeufe.append((geraet, subprocess.Popen(befehl, stdin=subprocess.DEVNULL,
+                                                    stdout=subprocess.DEVNULL,
+                                                    stderr=subprocess.DEVNULL)))
+        except OSError as e:
+            log.error("Stopp auf %s nicht startbar: %s", geraet, e)
+    # Parallel, damit ein schlafendes Gerät die übrigen nicht aufhält
+    ende = time.monotonic() + STOPP_TIMEOUT if ende is None else ende
+    for geraet, lauf in laeufe:
+        if not _warten(lauf, max(0.0, ende - time.monotonic())):
+            log.error("Stopp auf %s nicht rechtzeitig fertig, abgebrochen", geraet)
+
+
+def ausgabe_stoppen(sitzung: str, quelle: list[str], entfernt: str,
+                    fremd: bool = False) -> None:
+    """Ausgabe der eigenen Sitzung beenden. Mit fremd (Stoppwort) und ohne eigene Ausgabe
+    das, was gerade klingt, auch wenn es aus einer anderen Sitzung oder von einem anderen
+    Rechner kommt."""
+    # Mit Gerätewahl läuft die Wiedergabe womöglich als Hintergrundprozess; ohne Marke
+    # kostet das nur einen Blick in den Ordner
+    eigene = wiedergabe_stoppen(sitzung)
+    sonst = fremd and bool(quelle) and not eigene
     if not entfernt:
-        # Mit Gerätewahl läuft die Wiedergabe womöglich als Hintergrundprozess; ohne Marke
-        # kostet das nur einen Blick in den Ordner
-        wiedergabe_stoppen(sitzung)
-        aufrufen(["--stopp", *quelle])
+        if not sonst:
+            aufrufen(["--stopp", *quelle])
+            return
+        # Eine Frist für beides: Der Prompt-Hook hat zehn Sekunden. Der Dienst hier antwortet
+        # sonst in einer Drittelsekunde, die Geräte bekommen den Rest
+        ende = time.monotonic() + STOPP_TIMEOUT
+        if _stopp_hier([*quelle, "--sonst-aktuell"], STOPP_TIMEOUT / 2) != "eigene":
+            fremd_stoppen(ende=ende)
+        return
+    if sonst:
+        # Den Mac zugleich mit den Geräten: Nacheinander passte ein schlafendes Gerät samt
+        # ssh zum Mac nicht in die zehn Sekunden des Prompt-Hooks
+        fremd_stoppen([(entfernt, entfernter_befehl(entfernt, ["--stopp", *quelle,
+                                                               "--sonst-aktuell"]))])
         return
     # Erst hier verstummen, das geht sofort; dann den Auftrag auf dem Mac abbrechen. Ohne
     # Marke läuft für diese Sitzung nichts, auch dort nicht: Der Hintergrundprozess lebt, bis
     # ssh endet. ssh bei jedem Stopp kostete sonst den Aufbau, bei schlafendem Mac bis zum
     # ConnectTimeout
-    if not wiedergabe_stoppen(sitzung):
+    if not eigene:
         return
     try:
         subprocess.run(entfernter_befehl(entfernt, ["--stopp", *quelle]),
@@ -926,7 +1086,7 @@ def main() -> int:
         # dahinter ein. Nur ein Stoppwort oder SPRECHEN_UNTERBRECHEN=1 bricht ab
         stoppwort = ist_stoppwort(prompt)
         if stoppwort or os.environ.get("SPRECHEN_UNTERBRECHEN") == "1":
-            ausgabe_stoppen(sitzung, quelle, entfernt)
+            ausgabe_stoppen(sitzung, quelle, entfernt, fremd=stoppwort)
         if stoppwort:
             # Claude bekommt das Stoppwort nicht; der Grund steht nur für den Nutzer da
             print(json.dumps({"decision": "block", "reason": "Gesprächsmodus: Ausgabe gestoppt."},

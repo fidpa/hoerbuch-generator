@@ -10,7 +10,7 @@
 #   ./sprechen.sh --liefern "Text" | <player>       # Ton als PCM nach stdout, etwa über ssh
 #   ./sprechen.sh --datei "Text"                    # als MP3 ablegen, Pfad ausgeben
 #   ./sprechen.sh --quelle ID --ansage "Aus X." -   # Kennung des Aufrufers mitgeben
-#   ./sprechen.sh --stopp [--quelle ID] | --status | --beenden
+#   ./sprechen.sh --stopp [--quelle ID [--sonst-aktuell]] | --status | --beenden
 #
 # Der erste Aufruf startet einen Dienst, der das Modell geladen hält; nach 20 Minuten
 # ohne Auftrag beendet er sich. Für lange Texte und MP3: vorlesen.sh.

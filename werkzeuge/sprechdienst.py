@@ -8,7 +8,7 @@ Fuer lange Texte bleibt vorlesen.sh der Weg (MP3, Fortsetzen nach Abbruch).
 Usage:
     .venv/bin/python werkzeuge/sprechdienst.py [-v STIMME] [-t TEMPO] [--lauter DB] [--mit-atem]
         [--warten | --liefern | --datei] [--quelle ID [--ansage TEXT]] [TEXT | -]
-    .venv/bin/python werkzeuge/sprechdienst.py --stopp [--quelle ID] | --status | --beenden
+    .venv/bin/python werkzeuge/sprechdienst.py --stopp [--quelle ID [--sonst-aktuell]] | --status | --beenden
 
 Aufbau:
     - Ein Dienst haelt das Modell geladen und lauscht auf einem Unix-Socket
@@ -43,8 +43,10 @@ Aufbau:
 Protokoll: eine JSON-Zeile je Verbindung, eine JSON-Zeile als Antwort.
     {"cmd": "sprich", "text": "...", "stimme": "erzaehler", "tempo": 1.2, "lauter": 0,
      "quelle": "", "ansage": "", "mit_atem": false, "warten": false}
-    {"cmd": "stopp", "quelle": ""} | {"cmd": "status"} | {"cmd": "beenden"}
+    {"cmd": "stopp", "quelle": "", "sonst_aktuell": false} | {"cmd": "status"} | {"cmd": "beenden"}
     Ein stopp mit quelle bricht nur die Auftraege mit derselben quelle ab, ohne quelle alle.
+    Mit sonst_aktuell trifft er, wenn die quelle nichts hat, den Auftrag einer anderen, den
+    der Dienst gerade selbst abspielt. Die Antwort nennt in "getroffen", was er traf: eigene, aktuell, nichts, alle.
     Die ansage wird vorangestellt, wenn zuletzt eine andere quelle hoerbar sprach.
     Mit "liefern": true (nicht zusammen mit warten) antwortet der Dienst mit der Kopfzeile
     {"ok": true, "format": "s16le", "rate": 24000, "kanaele": 1}, danach folgt roher Ton bis
@@ -326,10 +328,10 @@ class Dienst:
         if cmd == "stopp":
             try:
                 quelle = _feld(anfrage, "quelle", str, "")
+                sonst_aktuell = _feld(anfrage, "sonst_aktuell", bool, False)
             except TypeError as e:
                 return {"ok": False, "fehler": str(e)}
-            self._stoppen(quelle)
-            return {"ok": True}
+            return {"ok": True, "getroffen": self._stoppen(quelle, sonst_aktuell)}
         if cmd == "beenden":
             self._stoppen()
             self.ende.set()
@@ -398,10 +400,14 @@ class Dienst:
                 break
         return None
 
-    def _stoppen(self, quelle: str = "") -> None:
+    def _stoppen(self, quelle: str = "", sonst_aktuell: bool = False) -> str:
         """Ausgabe abbrechen. Mit quelle nur die Auftraege dieses Aufrufers, sonst alle:
         Laufen mehrere Sitzungen nebeneinander, soll ein Stopp in der einen nicht die
-        Antwort der anderen abschneiden."""
+        Antwort der anderen abschneiden. Findet ein Stopp mit quelle nichts und ist
+        sonst_aktuell gesetzt, trifft er den Auftrag einer anderen Quelle, den der Dienst gerade
+        selbst abspielt (nicht einen gelieferten), ohne die Warteschlange: Ein Stoppwort kommt
+        im Fenster mit dem Fokus an, gesprochen hat vielleicht eine andere Sitzung. Gibt
+        zurueck, was getroffen wurde: "eigene", "aktuell", "nichts" oder ohne quelle "alle"."""
         # Alles unter der Player-Sperre: Der Sprecher reiht Audio nur unter ihr ein und
         # prueft dabei, ob sein Auftrag vorbei ist. Ohne sie konnte der Sprecher zwischen
         # Markieren und flush den naechsten Auftrag beginnen, und der flush traf dessen Ton
@@ -411,13 +417,23 @@ class Dienst:
                 # genommen, aber noch nicht als aktuell gesetzt hat, faende sonst keine der
                 # beiden Pruefungen darunter; _uebernehmen vergleicht mit diesem Zeitpunkt
                 self._gestoppt[quelle] = time.monotonic()
+                wartende = False
                 with self.auftraege.mutex:
                     for wartend in self.auftraege.queue:
                         if wartend.quelle == quelle:
                             wartend.abbruch.set()
+                            wartende = True
                 aktuell = self.aktuell
-                if aktuell is None or aktuell.quelle != quelle:
-                    return
+                if aktuell is not None and aktuell.quelle == quelle:
+                    getroffen = "eigene"
+                elif (aktuell is not None and aktuell.ziel is None and sonst_aktuell
+                      and not wartende):
+                    # Nur was der Dienst selbst abspielt: Ein gelieferter Auftrag ist oft die
+                    # naechste Antwort, die auf dem Geraet noch auf die Sperre des Players
+                    # wartet; was dort klingt, stoppt der Aufrufer an der Sperre
+                    getroffen = "aktuell"
+                else:
+                    return "eigene" if wartende else "nichts"
                 aktuell.abbruch.set()
             else:
                 self.runde += 1
@@ -427,6 +443,7 @@ class Dienst:
                     except queue.Empty:
                         break
                 aktuell = self.aktuell
+                getroffen = "alle"
             if aktuell is not None and aktuell.ziel is not None:
                 # Mit --liefern kann der Sprecher in sendall haengen, wenn der Aufrufer nicht
                 # mehr liest (Netz weg). Das Flag allein saehe er erst nach LIEFERN_TIMEOUT;
@@ -437,6 +454,7 @@ class Dienst:
                     pass
             if self.player is not None:
                 self.player.flush()
+            return getroffen
 
     def _uebernehmen(self, auftrag: Auftrag) -> bool:
         """Auftrag aus der Warteschlange als aktuell setzen; False, wenn er schon gestoppt ist."""
@@ -746,6 +764,10 @@ def main() -> int:
     parser.add_argument("--quelle", default="",
                         help="Kennung des Aufrufers, etwa eine Sitzung; --stopp mit --quelle "
                              "bricht nur deren Aufträge ab")
+    parser.add_argument("--sonst-aktuell", action="store_true",
+                        help="mit --stopp --quelle: hat die Quelle nichts laufen, den laufenden "
+                             "Auftrag einer anderen Quelle abbrechen; gibt aus, was getroffen "
+                             "wurde (eigene, aktuell, nichts)")
     parser.add_argument("--ansage", default="",
                         help="mit --quelle: Satz, der vorangestellt wird, wenn zuletzt eine "
                              "andere Quelle sprach, etwa \"Aus Projekt X.\"")
@@ -760,14 +782,23 @@ def main() -> int:
         return Dienst(socket_pfad(), args.leerlauf).laufen()
 
     if args.stopp or args.status or args.beenden:
+        sonst = args.stopp and args.sonst_aktuell
         if not _erreichbar(socket_pfad()):
             if args.status:
                 print(json.dumps({"ok": True, "zustand": "aus"}))
+            elif sonst:
+                print("nichts")
             return 0
         cmd = "stopp" if args.stopp else "status" if args.status else "beenden"
-        antwort = senden({"cmd": cmd, "quelle": args.quelle})
+        anfrage = {"cmd": cmd, "quelle": args.quelle}
+        if sonst:
+            anfrage["sonst_aktuell"] = True
+        antwort = senden(anfrage)
         if args.status:
             print(json.dumps(antwort, ensure_ascii=False, indent=2))
+        elif sonst:
+            # Ein Dienst, der vor dem Update startete, kennt das Feld nicht
+            print(antwort.get("getroffen", "unbekannt"))
         return 0 if antwort.get("ok") else 1
 
     if args.liefern + args.warten + args.datei > 1:

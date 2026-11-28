@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -68,9 +69,11 @@ class Hook(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def _env(self, env: dict | None = None) -> dict:
-        # XDG_RUNTIME_DIR im Testordner: Die Modus-Dateien echter Sitzungen bleiben unberührt
+        # XDG_RUNTIME_DIR im Testordner: Die Modus-Dateien echter Sitzungen bleiben unberührt.
+        # HOME ebenso: Das Stoppwort liest settings.json und beendet den Player, der die
+        # Sperre unter ~/.cache hält
         return {"HOERBUCH_GENERATOR": str(self.tmp), "PATH": "/usr/bin:/bin",
-                "XDG_RUNTIME_DIR": str(self.tmp / "run"), **(env or {})}
+                "HOME": str(self.tmp), "XDG_RUNTIME_DIR": str(self.tmp / "run"), **(env or {})}
 
     def _lauf(self, ereignis: str, eingabe: dict, env: dict | None = None) -> tuple[int, str]:
         lauf = subprocess.run([sys.executable, str(SKRIPT), ereignis], input=json.dumps(eingabe),
@@ -129,7 +132,8 @@ class Hook(unittest.TestCase):
         for wort in ("Psst.", "  still ", "RUHE!", "pst", "Pssst!", "Psssst..."):
             self.protokoll.unlink(missing_ok=True)
             aufruf, ausgabe = self._prompt(wort)
-            self.assertEqual(aufruf, "--stopp --quelle abc\n", wort)
+            # Läuft für die Sitzung hier nichts, darf der Dienst die laufende Ausgabe treffen
+            self.assertEqual(aufruf, "--stopp --quelle abc --sonst-aktuell\n", wort)
             self.assertEqual(json.loads(ausgabe)["decision"], "block", wort)
 
     def test_stopp_und_saetze_sind_keine_stoppwoerter(self):
@@ -422,8 +426,63 @@ class Fernbetrieb(unittest.TestCase):
 
     def test_prompt_ohne_wiedergabe_baut_keine_verbindung_auf(self):
         # Sonst kostete jede Eingabe einen ssh-Aufbau, bei schlafendem Mac bis zum Timeout
-        self.assertEqual(self._lauf("prompt", {"session_id": "abc", "prompt": "Psst"}), 0)
+        self.assertEqual(self._lauf("prompt", {"session_id": "abc", "prompt": "Weiter"}), 0)
+        with mock.patch.dict(self.env, {"SPRECHEN_UNTERBRECHEN": "1"}):
+            self.assertEqual(self._lauf("prompt", {"session_id": "abc", "prompt": "Weiter"}), 0)
         self.assertFalse(self.protokoll.exists())
+
+    def test_stoppwort_ohne_eigene_wiedergabe_trifft_was_gerade_klingt(self):
+        # Nur ein Stoppwort fragt den Mac und die Geräte, was gerade läuft
+        env = {"SPRECHEN_GERAETE": "macbook hier"}
+        with mock.patch.dict(self.env, env):
+            self.assertEqual(self._lauf("prompt", {"session_id": "abc", "prompt": "Psst"}), 0)
+        # Der Stopp für das Gerät ist mehrzeilig (Python), deshalb Teile statt Zeilen
+        aufrufe = self.protokoll.read_text(encoding="utf-8")
+        self.assertEqual(aufrufe.count("-o BatchMode=yes"), 2, aufrufe)
+        self.assertRegex(aufrufe, r" mac \S*sprechen\.sh --stopp --quelle abc --sonst-aktuell")
+        self.assertRegex(aufrufe, r" macbook PATH=.*player\.lock")
+
+    def test_stoppwort_holt_die_geraete_aus_dem_stop_hook(self):
+        # So steht es in der Anleitung: SPRECHEN_GERAETE nur vor dem Stop-Hook
+        claude = self.tmp / ".claude"
+        claude.mkdir()
+        befehl = f"{sys.executable} {SKRIPT}"
+        (claude / "settings.json").write_text(json.dumps({"hooks": {
+            "Stop": [{"hooks": [{"type": "command",
+                                 "command": f"SPRECHEN_GERAETE='hier macbook' {befehl} stop"}]}],
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": f"{befehl} prompt"}]}],
+        }}), encoding="utf-8")
+        self.assertEqual(self._lauf("prompt", {"session_id": "abc", "prompt": "Psst"}), 0)
+        aufrufe = self.protokoll.read_text(encoding="utf-8")
+        self.assertRegex(aufrufe, r" macbook PATH=.*player\.lock")
+        self.assertNotIn(" hier ", aufrufe)
+
+    def test_stoppwort_trifft_den_player_hier_und_keine_wartende_sitzung(self):
+        import claude_sprechen
+        ordner = self.tmp / "run" / "hoerbuch-generator"
+        ordner.mkdir(parents=True)
+        sperre = self.tmp / ".cache" / "hoerbuch-generator" / "player.lock"
+        # Hält die Sperre wie ein Player, der Ton bekommt: eine andere Sitzung oder ein
+        # anderer Rechner über ssh
+        halter = subprocess.Popen([sys.executable, "-c", claude_sprechen.SPERRE_PY, str(sperre),
+                                   "sleep", "30"], stdin=subprocess.PIPE)
+        halter.stdin.write(b"PCM")
+        halter.stdin.flush()
+        wartend = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                    "claude_sprechen"], start_new_session=True)
+        try:
+            frist = time.monotonic() + 5
+            while time.monotonic() < frist and not (sperre.exists() and sperre.read_text()):
+                time.sleep(0.05)
+            (ordner / f"laeuft-{claude_sprechen._kennung('uvw')}-{wartend.pid}").touch()
+            self.assertEqual(self._lauf("prompt", {"session_id": "abc", "prompt": "Psst"}), 0)
+            self.assertNotEqual(halter.wait(timeout=5), 0)
+            self.assertIsNone(wartend.poll())
+        finally:
+            for prozess in (halter, wartend):
+                prozess.kill()
+                prozess.wait()
+            halter.stdin.close()
 
     def test_befehl_quotet_fuer_die_shell_dort(self):
         import claude_sprechen
@@ -461,7 +520,8 @@ class Fernbetrieb(unittest.TestCase):
         self.assertIn("ServerAliveInterval=5", befehl)
         self.assertIn("ServerAliveCountMax=3", befehl)
 
-    def _abspielen_mit_grenzen(self, ssh_skript: str, player: str) -> tuple[float, list[str]]:
+    def _abspielen_mit_grenzen(self, ssh_skript: str, player: str,
+                               obergrenze: float = 0.5) -> tuple[float, list[str]]:
         """abspielen im selben Prozess, mit Fristen von einer halben Sekunde."""
         import time
 
@@ -469,7 +529,7 @@ class Fernbetrieb(unittest.TestCase):
         (self.bin / "ssh").write_text(ssh_skript, encoding="utf-8")
         umgebung = {**self.env, "SPRECHEN_PLAYER": player}
         with mock.patch.dict(os.environ, umgebung), \
-                mock.patch.multiple(claude_sprechen, OBERGRENZE_GRUND=0.5,
+                mock.patch.multiple(claude_sprechen, OBERGRENZE_GRUND=obergrenze,
                                     OBERGRENZE_JE_ZEICHEN=0, NACHLAUF=0.5), \
                 self.assertLogs("claude_sprechen", "ERROR") as protokoll:
             os.environ.pop("SPRECHEN_GERAETE", None)
@@ -507,11 +567,150 @@ class Fernbetrieb(unittest.TestCase):
         self.assertIn("Obergrenze", meldungen[0])
 
     def test_haengender_rechenteil_endet_nach_dem_player(self):
+        # Der Player selbst endet; eine halbe Sekunde bis zur Obergrenze reichte ihm unter Last
+        # samt Start der Sperre nicht immer, dann kam deren Meldung statt dieser
         dauer, meldungen = self._abspielen_mit_grenzen(
             '#!/bin/sh\ncat > /dev/null; printf PCM; exec >&-; exec sleep 30\n',
-            "/bin/sh -c 'cat > /dev/null'")
+            "/bin/sh -c 'cat > /dev/null'", obergrenze=3)
         self.assertLess(dauer, 5)
         self.assertIn("nach dem Player nicht", meldungen[0])
+
+
+class SperreAmPlayer(unittest.TestCase):
+    """Die Sperre auf dem Gerät, das spielt (SPERRE_PY), und der Stopp dort (STOPP_PY), hier
+    lokal mit einem Player, der Beginn und Ende in eine Datei schreibt."""
+
+    def setUp(self):
+        import claude_sprechen
+        self.c = claude_sprechen
+        self.tmp = Path(tempfile.mkdtemp(prefix="sperre"))
+        self.sperre = self.tmp / "ordner" / "player.lock"
+        self.ablauf = self.tmp / "ablauf.txt"
+        self.prozesse: list[subprocess.Popen] = []
+
+    def tearDown(self):
+        for prozess in self.prozesse:
+            prozess.kill()
+            prozess.wait()
+            if prozess.stdin:
+                prozess.stdin.close()
+        shutil.rmtree(self.tmp)
+
+    def _player(self, name: str, dauer: float = 0.5, spieler: str = "") -> subprocess.Popen:
+        spieler = spieler or (f'echo "start $1" >> "{self.ablauf}"; cat > /dev/null; '
+                              f'sleep {dauer}; echo "ende $1" >> "{self.ablauf}"')
+        prozess = subprocess.Popen([sys.executable, "-c", self.c.SPERRE_PY, str(self.sperre),
+                                    "sh", "-c", spieler, "_", name], stdin=subprocess.PIPE)
+        self.prozesse.append(prozess)
+        return prozess
+
+    def _ablauf(self) -> list[str]:
+        return self.ablauf.read_text(encoding="utf-8").split() if self.ablauf.exists() else []
+
+    def test_nacheinander_und_erst_wenn_ton_kommt(self):
+        # b startet zuerst, bekommt aber noch keinen Ton: a darf nicht auf b warten
+        b = self._player("b")
+        time.sleep(0.3)
+        a = self._player("a")
+        a.stdin.write(b"PCM")
+        a.stdin.close()
+        time.sleep(0.2)
+        b.stdin.write(b"PCM")
+        b.stdin.close()
+        self.assertEqual(a.wait(timeout=10), 0)
+        self.assertEqual(b.wait(timeout=10), 0)
+        self.assertEqual(self._ablauf(), ["start", "a", "ende", "a", "start", "b", "ende", "b"])
+
+    def test_stopp_beendet_den_halter_und_sonst_nichts(self):
+        stopp = [sys.executable, "-c", self.c.STOPP_PY, str(self.sperre)]
+        # Wie die echten Player per exec: Der Prozess mit der PID aus der Datei hält die Sperre
+        a = self._player("a", spieler=f'echo "start $1" >> "{self.ablauf}"; cat > /dev/null; '
+                                      "exec sleep 30")
+        a.stdin.write(b"PCM")
+        a.stdin.close()
+        frist = time.monotonic() + 5
+        while "a" not in self._ablauf() and time.monotonic() < frist:
+            time.sleep(0.05)
+        self.assertEqual(subprocess.run(stopp, timeout=10).returncode, 0)
+        self.assertNotEqual(a.wait(timeout=5), 0)
+        # Sperre frei: Der Stopp findet niemanden und endet ohne Fehler
+        self.assertEqual(subprocess.run(stopp, timeout=10).returncode, 0)
+
+    def _warten_auf_start(self, name: str) -> None:
+        frist = time.monotonic() + 5
+        while name not in self._ablauf() and time.monotonic() < frist:
+            time.sleep(0.05)
+        self.assertIn(name, self._ablauf())
+
+    def test_ohne_ssh_endet_der_wartende_still(self):
+        # Ein Stopp beim Warten beendet ssh; sshd baut ab, der Wartende verliert die Eltern
+        a = self._player("a", spieler=f'echo "start $1" >> "{self.ablauf}"; exec sleep 30')
+        a.stdin.write(b"PCM")
+        a.stdin.flush()
+        self._warten_auf_start("a")
+        eltern = subprocess.Popen(
+            [sys.executable, "-c",
+             "import subprocess, sys\n"
+             "p = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE)\n"
+             "p.stdin.write(b'PCM'); p.stdin.flush()\n"
+             "print(p.pid, flush=True)\n"
+             "import time; time.sleep(0.5)\n",  # erst sterben, wenn das Kind wartet
+             sys.executable, "-c", self.c.SPERRE_PY, str(self.sperre), "sh", "-c",
+             f'echo "start b" >> "{self.ablauf}"'], stdout=subprocess.PIPE, text=True)
+        b = int(eltern.stdout.readline())
+        eltern.wait(timeout=5)
+        eltern.stdout.close()
+        frist = time.monotonic() + 5
+        while time.monotonic() < frist:
+            try:
+                os.kill(b, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(b, 9)
+            self.fail("der Wartende ohne Eltern lebt noch")
+        self.assertIsNone(a.poll())  # der Halter spielt weiter
+        self.assertEqual(self._ablauf(), ["start", "a"])
+
+    def test_haengender_halter_wird_abgeloest(self):
+        # Ein Player, dessen Verbindung ohne Abbau abriss, wartet ohne Ende auf Ton
+        a = self._player("a", spieler=f'echo "start $1" >> "{self.ablauf}"; exec sleep 30')
+        a.stdin.write(b"PCM")
+        a.stdin.flush()
+        self._warten_auf_start("a")
+        alt = time.time() - self.c.SPERRE_ALTER - 5
+        self.sperre.write_text(f"{a.pid} {alt:.0f}", encoding="utf-8")
+        b = self._player("b", dauer=0)
+        b.stdin.write(b"PCM")
+        b.stdin.close()
+        self.assertNotEqual(a.wait(timeout=5), 0)
+        self.assertEqual(b.wait(timeout=10), 0)
+        self.assertEqual(self._ablauf(), ["start", "a", "start", "b", "ende", "b"])
+
+    def test_ohne_sperrdatei_spielt_er_trotzdem(self):
+        self.sperre = self.tmp / "datei" / "player.lock"
+        self.sperre.parent.write_text("kein Ordner", encoding="utf-8")
+        a = self._player("a", dauer=0)
+        a.stdin.write(b"PCM")
+        a.stdin.close()
+        self.assertEqual(a.wait(timeout=10), 0)
+        self.assertEqual(self._ablauf(), ["start", "a", "ende", "a"])
+
+    @unittest.skipUnless(Path("/usr/bin/python3").exists(), "kein /usr/bin/python3")
+    def test_platzhalter_von_macos_gilt_nicht_als_python(self):
+        # Ohne Command Line Tools öffnete jeder Aufruf von /usr/bin/python3 einen Dialog
+        bin_ = self.tmp / "bin"
+        bin_.mkdir()
+        (bin_ / "uname").write_text("#!/bin/sh\necho Darwin\n", encoding="utf-8")
+        for name, rc in (("ohne", 2), ("mit", 0)):
+            (bin_ / "xcode-select").write_text(f"#!/bin/sh\nexit {rc}\n", encoding="utf-8")
+            for datei in bin_.iterdir():
+                datei.chmod(0o755)
+            lauf = subprocess.run(["/bin/sh", "-c", f"{self.c.SPERRE_DA} && echo ja || echo nein"],
+                                  env={"PATH": f"{bin_}:/usr/bin:/bin"}, capture_output=True,
+                                  text=True, timeout=10)
+            self.assertEqual(lauf.stdout.strip(), "nein" if name == "ohne" else "ja", name)
 
 
 class Sitzungsbeginn(unittest.TestCase):
@@ -832,8 +1031,9 @@ class Pruefen(unittest.TestCase):
         import claude_sprechen
         name = claude_sprechen.FERN_PLAYER_NAME
         self.assertNotIn("exec", name)
-        for player in ("echo paplay;", "echo ffmpeg;", "echo ffplay;"):
+        for player in ("printf %s paplay;", "printf %s ffmpeg;", "printf %s ffplay;"):
             self.assertIn(player, name)
+        self.assertNotIn("exec", claude_sprechen.FERN_STOPP)
 
 
 if __name__ == "__main__":

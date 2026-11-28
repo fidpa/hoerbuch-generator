@@ -127,9 +127,11 @@ ihn beendet; den nächsten Start übernimmt der Hook.
 Der Modus gilt je Sitzung.
 
 **Mehrere Sitzungen:** Antworten aus verschiedenen Sitzungen spricht der Dienst nacheinander.
-Ein Stoppwort bricht nur die Ausgabe der eigenen Sitzung ab. Wechselt die sprechende Sitzung,
-beginnt die Antwort mit dem Namen des Projektordners, etwa „Aus Notizen.“ für einen Ordner
-`notizen`.
+Ein Stoppwort bricht die Ausgabe der eigenen Sitzung ab. Läuft für sie nichts, trifft es die
+Antwort, die gerade klingt, auch aus einer anderen Sitzung: Man tippt „Psst“ ins Fenster mit dem
+Fokus, gesprochen hat vielleicht ein anderes. Wartende Antworten anderer Sitzungen bleiben.
+Wechselt die sprechende Sitzung, beginnt die Antwort mit dem Namen des Projektordners, etwa
+„Aus Notizen.“ für einen Ordner `notizen`.
 
 **Warum „Stopp“ kein Stoppwort ist:** Mit „Stopp“ hält man oft Claude selbst an, etwa in einer
 Oberfläche, die Eingaben während einer laufenden Antwort weiterreicht. Das Wort soll dann bei
@@ -207,7 +209,10 @@ Erwartet wird `Device(gpu, 0)`.
 kehrt sofort zurück. Mehrere Sitzungen dieses Geräts sprechen nacheinander, eine Sperre unter
 `$XDG_RUNTIME_DIR/hoerbuch-generator/` (sonst `~/.cache/hoerbuch-generator/`) hält sie in der
 Reihe. Ein Stoppwort beendet die Wiedergabe der eigenen Sitzung hier sofort und stoppt den
-Auftrag auf dem Mac. Läuft für die Sitzung nichts, baut es keine Verbindung auf. Fehler der Wiedergabe stehen in `wiedergabe.log` im selben Ordner, jede Zeile mit Datum und Uhrzeit, dazu Auftrag, Beginn und Ende jeder Wiedergabe. Der Mac
+Auftrag auf dem Mac. Läuft für die Sitzung nichts, stoppt es die Wiedergabe, die hier gerade
+klingt, was der Dienst auf dem Mac selbst abspielt, und, mit Gerätewahl, den Player auf jedem Gerät
+(unten); dafür baut es Verbindungen auf, parallel und je höchstens acht Sekunden. Eine andere
+Eingabe baut nie eine auf. Fehler der Wiedergabe stehen in `wiedergabe.log` im selben Ordner, jede Zeile mit Datum und Uhrzeit, dazu Auftrag, Beginn und Ende jeder Wiedergabe. Der Mac
 muss wach und erreichbar sein; ist er es nicht, bleibt es still, und die Sitzung läuft weiter.
 
 ## Ton auf dem Gerät, an dem du gerade arbeitest
@@ -240,6 +245,23 @@ mit den gemessenen Zeiten in `wiedergabe.log` (Ordner wie oben). Ein Stoppwort d
 Sitzung bricht die Wiedergabe auch auf dem anderen Gerät ab; was der Player dort schon
 gepuffert hat, klingt noch aus, bei `ffmpeg` unter macOS rund drei Sekunden, bei `ffplay` rund
 fünf (gemessen am 27.11.2026).
+
+**Mehrere Rechner, ein Gerät:** Landen Antworten von zwei Rechnern auf demselben Gerät, etwa vom
+Server und vom Mac auf dem Notebook, spielt das Gerät sie nacheinander. Der Player dort nimmt eine
+Sperre (`~/.cache/hoerbuch-generator/player.lock`), sobald der erste Ton ankommt, und gibt sie
+mit seinem Ende frei. Ohne die Sperre klangen die Antworten übereinander: Der Mac rechnet sie
+zwar nacheinander, aber die Puffer von ssh fassen bis zu 40 Sekunden Ton. Der Player des
+Fernbetriebs auf dem Gerät selbst nimmt dieselbe Sperre. Die Sperre braucht `python3` auf dem
+Gerät; `pruefen` zeigt „mit Sperre“ oder „ohne Sperre“, ohne `python3` spielt das Gerät wie
+bisher. Unter macOS ohne Command Line Tools gilt `/usr/bin/python3` nicht als `python3`: Es ist
+dort nur ein Platzhalter, der bei jedem Aufruf den Dialog zur Installation öffnet. Hält ein
+Player die Sperre länger als zehn Minuten, gilt er als hängend, und der nächste beendet ihn; so
+endet etwa ein Player, dessen Verbindung abriss, als das Gerät einschlief. Grenze: Spielt der
+Mac, der rechnet, zugleich eine Antwort seiner eigenen Sitzungen über den Dienst, nimmt der
+Dienst die Sperre nicht, beide können sich dort überlagern.
+
+Für das Stoppwort fragt der Prompt-Hook dieselben Geräte. Steht `SPRECHEN_GERAETE` wie im
+Beispiel oben nur vor dem Stop-Hook, liest er den Wert dort aus `settings.json`.
 
 ## Am Handy: Datei statt Ton (`/sprechen datei`)
 

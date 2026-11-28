@@ -153,9 +153,53 @@ class StoppJeQuelle(unittest.TestCase):
         self.assertEqual(self.s.text_mit_ansage(a, "sitzung-a"), "Fertig.")
         self.assertEqual(self.s.text_mit_ansage(a, ""), "Fertig.")  # erster Auftrag
 
+    def _laufend(self, quelle: str):
+        self.dienst.aktuell = self.s.Auftrag(text="x", stimme="erzaehler", tempo=1.0,
+                                             mit_atem=False, runde=self.dienst.runde,
+                                             quelle=quelle)
+        return self.dienst.aktuell
+
+    def test_sonst_aktuell_trifft_die_laufende_fremde_ausgabe(self):
+        # Ein Stoppwort im Fenster mit dem Fokus, gesprochen hat eine andere Sitzung
+        wartend, laufend = self._auftrag("sitzung-b"), self._laufend("sitzung-b")
+        self.assertEqual(self.dienst._stoppen("sitzung-a", sonst_aktuell=True), "aktuell")
+        self.assertTrue(laufend.vorbei(self.dienst.runde))
+        self.assertFalse(wartend.vorbei(self.dienst.runde))
+
+    def test_sonst_aktuell_nur_ohne_eigene_ausgabe(self):
+        laufend = self._laufend("sitzung-b")
+        eigen = self._auftrag("sitzung-a")
+        self.assertEqual(self.dienst._stoppen("sitzung-a", sonst_aktuell=True), "eigene")
+        self.assertTrue(eigen.vorbei(self.dienst.runde))
+        self.assertFalse(laufend.vorbei(self.dienst.runde))
+        self._laufend("sitzung-a")
+        self.assertEqual(self.dienst._stoppen("sitzung-a", sonst_aktuell=True), "eigene")
+
+    def test_sonst_aktuell_trifft_keinen_gelieferten_auftrag(self):
+        # Geliefert wird oft die nächste Antwort, die am Gerät noch auf die Sperre wartet
+        laufend = self._laufend("sitzung-b")
+        laufend.ziel = unittest.mock.Mock()
+        self.assertEqual(self.dienst._stoppen("sitzung-a", sonst_aktuell=True), "nichts")
+        self.assertFalse(laufend.vorbei(self.dienst.runde))
+        laufend.ziel.shutdown.assert_not_called()
+
+    def test_ohne_sonst_aktuell_bleibt_die_fremde_ausgabe(self):
+        laufend = self._laufend("sitzung-b")
+        self.assertEqual(self.dienst._stoppen("sitzung-a"), "nichts")
+        self.assertFalse(laufend.vorbei(self.dienst.runde))
+        self.dienst.aktuell = None
+        self.assertEqual(self.dienst._stoppen("sitzung-a", sonst_aktuell=True), "nichts")
+
+    def test_stopp_antwortet_mit_dem_treffer(self):
+        self._laufend("sitzung-b")
+        antwort = self.dienst._bearbeiten({"cmd": "stopp", "quelle": "sitzung-a",
+                                           "sonst_aktuell": True})
+        self.assertEqual(antwort, {"ok": True, "getroffen": "aktuell"})
+        self.assertFalse(self.dienst._bearbeiten({"cmd": "stopp", "sonst_aktuell": "ja"})["ok"])
+
     def test_stopp_ohne_quelle_trifft_alle(self):
         a, b = self._auftrag("sitzung-a"), self._auftrag("")
-        self.dienst._stoppen()
+        self.assertEqual(self.dienst._stoppen(), "alle")
         self.assertTrue(a.vorbei(self.dienst.runde))
         self.assertTrue(b.vorbei(self.dienst.runde))
         self.assertEqual(self.dienst.auftraege.qsize(), 0)

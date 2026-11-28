@@ -6,6 +6,35 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.11.0] - 2026-11-28: Zwei Rechner, ein Gerät, eine Antwort nach der anderen
+
+### Hinzugefügt
+
+- **Sperre auf dem Gerät, das spielt:** Landeten Antworten von zwei Rechnern auf demselben
+  Gerät, etwa vom Server und vom Mac auf dem Notebook, klangen sie übereinander. Der Mac rechnet
+  sie zwar nacheinander, die Puffer von ssh fassen aber bis zu 40 Sekunden Ton. Jetzt nimmt der
+  Player dort eine Sperre, sobald der erste Ton ankommt, und gibt sie mit seinem Ende frei; der
+  Player des Fernbetriebs auf dem Gerät selbst nimmt dieselbe. Ein Player, der die Sperre länger
+  als zehn Minuten hält, gilt als hängend und wird abgelöst. Das braucht `python3` auf dem Gerät;
+  ohne spielt es wie bisher, `pruefen` zeigt den Unterschied. Unter macOS ohne Command Line Tools
+  zählt der Platzhalter `/usr/bin/python3` nicht, weil er bei jedem Aufruf einen
+  Installationsdialog öffnete.
+- **`sprechen.sh --stopp --quelle ID --sonst-aktuell`:** Hat die Quelle nichts laufen, bricht
+  der Dienst den Auftrag einer anderen Quelle ab, den er gerade selbst abspielt, ohne die
+  Warteschlange, und gibt aus, was er getroffen hat (`eigene`, `aktuell`, `nichts`). Einen
+  gelieferten Auftrag (`--liefern`) trifft er nicht: Das ist oft die nächste Antwort, die auf dem
+  Gerät noch auf die Sperre wartet.
+
+### Geändert
+
+- **Das Stoppwort trifft, was gerade klingt:** „Psst“ stoppte nur die eigene Sitzung. Man tippt
+  es aber ins Fenster mit dem Fokus, und oft spricht gerade eine andere. Läuft für die eigene
+  Sitzung nichts, stoppt es jetzt, was der Dienst selbst abspielt, und hier wie auf jedem Gerät
+  aus `SPRECHEN_GERAETE` den Player, der die Sperre hält. Wartende Antworten bleiben. Steht
+  `SPRECHEN_GERAETE` nur vor dem Stop-Hook, liest der Prompt-Hook den Wert aus `settings.json`.
+  Dafür fragt das Stoppwort den Mac und die Geräte parallel, zusammen höchstens acht Sekunden;
+  eine andere Eingabe baut weiter keine Verbindung auf.
+
 ## [0.10.0] - 2026-11-27: Der gewählte Modus übersteht das Kompaktieren
 
 ### Geändert
@@ -256,6 +285,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.11.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.11.0
 [0.10.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.10.0
 [0.9.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.9.0
 [0.8.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.8.0
