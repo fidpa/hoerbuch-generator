@@ -6,6 +6,25 @@ dokumentiert.
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [0.16.2] - 2026-11-28: Keine Antworten mehr übereinander auf dem Mac, der rechnet
+
+### Behoben
+
+- **Antworten zweier Rechner klangen auf dem Mac, der rechnet, übereinander.** Spielt ein anderer
+  Rechner seine Antwort über die Gerätewahl auf diesem Mac, nimmt sein Player die Sperre
+  `~/.cache/hoerbuch-generator/player.lock`. Der Sprechdienst nahm sie für die Antworten der
+  Sitzungen auf dem Mac selbst nicht. Er hakt einen gelieferten Auftrag ab, sobald der Ton
+  versendet ist, und rechnet schneller, als gesprochen wird (rund 9 Sekunden Rechnen für
+  21 Sekunden Ton im Protokoll vom 28.11.2026). Die nächste eigene Antwort begann deshalb, während
+  die gelieferte noch klang. Jetzt hält der Dienst dieselbe Sperre, solange er selbst abspielt.
+  Statt einer PID steht dann `dienst` in der Datei, damit ein Stoppwort oder ein wartender Player
+  nicht den ganzen Dienst beendet. Wie lange eine Antwort auf die Sperre wartete, steht im
+  Protokoll des Dienstes. Ein Stoppwort oder das Tastenkürzel `taste-stopp` trifft in dieser Zeit
+  den Player, der gerade spricht, nicht die wartende Antwort. Spielte der Dienst selbst, beendet
+  ein Stopp nur ihn, und die nächste wartende Antwort bleibt. Ein Halter mit PID, der älter als
+  zehn Minuten ist, gilt wie bisher als hängend und wird beendet. Ohne nutzbare Sperrdatei spielt
+  der Dienst wie bisher ohne Sperre.
+
 ## [0.16.1] - 2026-11-28: Neuer Name Stimmwerk
 
 ### Geändert
@@ -407,6 +426,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 - **Test der Hörfassung** mit einem selbst erzeugten Test-PDF und erwarteter Ausgabe von
   `hoerfassung.py` und `pruefen.py`, als eigener Job in der CI
 
+[0.16.2]: https://github.com/fidpa/stimmwerk/releases/tag/v0.16.2
 [0.16.1]: https://github.com/fidpa/stimmwerk/releases/tag/v0.16.1
 [0.16.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.16.0
 [0.15.0]: https://github.com/fidpa/hoerbuch-generator/releases/tag/v0.15.0

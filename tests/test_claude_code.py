@@ -707,6 +707,45 @@ class Fernbetrieb(unittest.TestCase):
         self.assertIn("nach dem Player nicht", meldungen[0])
 
 
+class StoppwortNachDemDienst(unittest.TestCase):
+    """Stoppwort ohne eigene Ausgabe auf dem Mac, der rechnet: Spielte der Dienst selbst, hielt
+    er die Sperre hier, und wer sie nach dem Abbruch nimmt, wartete nur. Dann bleibt die Sperre
+    hier unberührt, die Geräte der Gerätewahl bekommen den Stopp weiter."""
+
+    def setUp(self):
+        import claude_sprechen
+        self.cs = claude_sprechen
+
+    def _stoppwort(self, getroffen: str) -> mock.MagicMock:
+        with mock.patch.object(self.cs, "wiedergabe_stoppen", return_value=False), \
+                mock.patch.object(self.cs, "_stopp_hier", return_value=getroffen) as hier, \
+                mock.patch.object(self.cs, "fremd_stoppen") as fremd:
+            self.cs.ausgabe_stoppen("abc", ["--quelle", "abc"], "", fremd=True)
+        hier.assert_called_once()
+        return fremd
+
+    def test_nur_ohne_eigene_wiedergabe_des_dienstes_die_sperre_hier(self):
+        self.assertFalse(self._stoppwort("aktuell").call_args.kwargs["hier"])
+        for getroffen in ("nichts", ""):
+            self.assertTrue(self._stoppwort(getroffen).call_args.kwargs["hier"], getroffen)
+        self._stoppwort("eigene").assert_not_called()
+
+    def test_ohne_hier_bleiben_die_geraete(self):
+        tmp = Path(tempfile.mkdtemp(prefix="stoppwort"))
+        self.addCleanup(shutil.rmtree, tmp)
+        sperre = tmp / "player.lock"
+        sperre.write_text("", encoding="utf-8")
+        for hier, erwartet in ((True, ["python", "ssh"]), (False, ["ssh"])):
+            with mock.patch.object(self.cs, "player_sperre", return_value=sperre), \
+                    mock.patch.object(self.cs, "stopp_geraete", return_value=["geraet"]), \
+                    mock.patch.object(self.cs, "_warten", return_value=True), \
+                    mock.patch.object(self.cs.subprocess, "Popen") as popen:
+                self.cs.fremd_stoppen(hier=hier)
+            befehle = [aufruf.args[0] for aufruf in popen.call_args_list]
+            self.assertEqual(["ssh" if b[0] == "ssh" else "python" for b in befehle], erwartet)
+            self.assertEqual(any(self.cs.STOPP_PY in b for b in befehle), hier)
+
+
 class SperreAmPlayer(unittest.TestCase):
     """Die Sperre auf dem Gerät, das spielt (SPERRE_PY), und der Stopp dort (STOPP_PY), hier
     lokal mit einem Player, der Beginn und Ende in eine Datei schreibt."""
@@ -1188,6 +1227,38 @@ class Tastenkuerzel(unittest.TestCase):
         self.assertEqual(self._lauf("taste-stopp").returncode, 0)
         self.assertEqual(self.protokoll.read_text(encoding="utf-8"),
                          "--stopp --quelle tastenkuerzel --sonst-aktuell\n")
+
+    def test_spielte_der_dienst_bleibt_der_naechste_halter(self):
+        # Der Dienst hielt die Sperre und gab sie mit dem Stopp frei; wer sie danach nimmt,
+        # wartete nur und bleibt. Meldet der Dienst nichts, trifft der Stopp den Halter
+        import claude_sprechen
+        (self.tmp / ".venv" / "bin").mkdir(parents=True)
+        (self.tmp / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+        for antwort, rc in (("aktuell", None), ("nichts", 143)):
+            with self.subTest(antwort=antwort):
+                (self.tmp / "sprechen.sh").write_text(f"echo {antwort}\n", encoding="utf-8")
+                (self.ordner / "player.lock").write_text("", encoding="utf-8")
+                halter = subprocess.Popen([sys.executable, "-c", claude_sprechen.SPERRE_PY,
+                                           str(self.ordner / "player.lock"), "sleep", "30"],
+                                          stdin=subprocess.PIPE)
+                try:
+                    halter.stdin.write(b"PCM")
+                    halter.stdin.flush()
+                    frist = time.monotonic() + 5
+                    while not (self.ordner / "player.lock").read_text().strip():
+                        if time.monotonic() > frist:
+                            self.fail("der Halter nahm die Sperre nicht")
+                        time.sleep(0.05)
+                    self.assertEqual(self._lauf("taste-stopp").returncode, 0)
+                    if rc is None:
+                        time.sleep(0.3)
+                        self.assertIsNone(halter.poll())
+                    else:
+                        self.assertEqual(halter.wait(timeout=5), rc)
+                finally:
+                    halter.kill()
+                    halter.wait()
+                    halter.stdin.close()
 
     def test_taste_stumm_schaltet_um_und_nochmal_bleibt_still(self):
         lauf = self._lauf("taste-stumm")

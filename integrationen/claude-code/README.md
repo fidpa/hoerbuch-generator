@@ -330,9 +330,13 @@ Gerät; `pruefen` zeigt „mit Sperre“ oder „ohne Sperre“, ohne `python3` 
 bisher. Unter macOS ohne Command Line Tools gilt `/usr/bin/python3` nicht als `python3`: Es ist
 dort nur ein Platzhalter, der bei jedem Aufruf den Dialog zur Installation öffnet. Hält ein
 Player die Sperre länger als zehn Minuten, gilt er als hängend, und der nächste beendet ihn; so
-endet etwa ein Player, dessen Verbindung abriss, als das Gerät einschlief. Grenze: Spielt der
-Mac, der rechnet, zugleich eine Antwort seiner eigenen Sitzungen über den Dienst, nimmt der
-Dienst die Sperre nicht, beide können sich dort überlagern.
+endet etwa ein Player, dessen Verbindung abriss, als das Gerät einschlief. Der Sprechdienst auf
+dem Mac, der rechnet, nimmt seit v0.16.2 dieselbe Sperre, solange er eine Antwort der Sitzungen
+dort selbst abspielt. Bis dahin klangen eine Antwort, die ein anderer Rechner auf diesem Mac
+spielte, und die nächste eigene übereinander: Der Dienst hakt einen gelieferten Auftrag ab,
+sobald der Ton versendet ist, und das geht schneller, als der Player spricht. Wartet eine
+eigene Antwort auf die Sperre, steht das mit der Wartezeit im Protokoll des Dienstes, und ein
+Stoppwort trifft dann den Player, der gerade spricht, nicht die wartende Antwort.
 
 Für das Stoppwort fragt der Prompt-Hook dieselben Geräte. Steht `SPRECHEN_GERAETE` wie im
 Beispiel oben nur vor dem Stop-Hook, liest er den Wert dort aus `settings.json`. Mit der

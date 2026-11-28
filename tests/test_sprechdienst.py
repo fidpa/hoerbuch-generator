@@ -450,6 +450,202 @@ class Stummschalter(unittest.TestCase):
 
 
 @unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
+class SperreDesPlayers(unittest.TestCase):
+    """Was der Dienst selbst abspielt, spielt er unter der Sperre neben LETZTE_PCM, die auch der
+    Player des Hook-Skripts nimmt: Antworten anderer Rechner auf diesem Gerät klingen davor oder
+    danach, nicht darüber. Andere Halter stellt der Test mit eigenen Deskriptoren dar."""
+
+    def setUp(self):
+        import fcntl
+        import socket
+
+        import numpy as np
+        import sprechdienst
+        self.s = sprechdienst
+        self.fcntl = fcntl
+        self.dienst = sprechdienst.Dienst(Path(tempfile.gettempdir()) / "unbenutzt.sock", 60)
+        self.gespielt: list[int] = []
+        self.beim_spielen: list[str] = []  # Inhalt der Sperrdatei und ob sie belegt war
+        test = self
+
+        class Player:
+            playing = False
+
+            def queue_audio(_, audio):
+                test.gespielt.append(len(audio))
+                if test.sperre.exists():
+                    test.beim_spielen.append(test.sperre.read_text(encoding="utf-8"))
+                    test.beim_spielen.append("belegt" if test._belegt() else "frei")
+
+            def buffered_samples(_):
+                return 0
+
+            def start_stream(_):
+                pass
+
+            def wait_for_drain(_):
+                pass
+
+            def stop_stream(_, *, abort=False):
+                pass
+
+            def flush(_):
+                pass
+
+        self.dienst.player = Player()
+        self.ordner = Path(tempfile.mkdtemp(prefix="sperre"))
+        self.sperre = self.ordner / "player.lock"
+        self.dienst_seite, self.aufrufer = socket.socketpair()
+        ton = np.zeros(sprechdienst.qwen.SAMPLE_RATE // 5, np.float32)
+        self.patches = [
+            unittest.mock.patch.object(sprechdienst, "LETZTE_PCM", self.ordner / "letzte.pcm"),
+            unittest.mock.patch.object(sprechdienst, "SPERRE_RUNDE", 0.02),
+            unittest.mock.patch.object(sprechdienst.qwen, "synthesize_chunk", return_value=ton)]
+        for patch in self.patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in self.patches:
+            patch.stop()
+        self.dienst_seite.close()
+        self.aufrufer.close()
+        shutil.rmtree(self.ordner, ignore_errors=True)
+
+    def _belegt(self) -> bool:
+        with open(self.sperre, "a") as f:
+            try:
+                self.fcntl.flock(f, self.fcntl.LOCK_EX | self.fcntl.LOCK_NB)
+                return False
+            except BlockingIOError:
+                return True
+
+    def _halten(self, inhalt: str = "4242 1700000000"):
+        """Ein anderer Player hält die Sperre; schließen gibt sie frei."""
+        f = open(self.sperre, "a+")
+        self.fcntl.flock(f, self.fcntl.LOCK_EX)
+        f.seek(0)
+        f.truncate()
+        f.write(inhalt)
+        f.flush()
+        self.addCleanup(f.close)
+        return f
+
+    def _auftrag(self, **weitere):
+        return self.s.Auftrag(text="Ein Satz, der lang genug für ein eigenes Stück ist.",
+                              stimme="erzaehler", tempo=1.0, mit_atem=True,
+                              runde=self.dienst.runde, quelle="sitzung-a", **weitere)
+
+    def _im_hintergrund(self, auftrag) -> threading.Thread:
+        self.dienst.aktuell = auftrag
+        faden = threading.Thread(target=self.dienst._sprechen,
+                                 args=(None, auftrag, None, "", None), daemon=True)
+        faden.start()
+        return faden
+
+    def _warten_bis(self, bedingung, frist: float = 5.0) -> None:
+        ende = time.monotonic() + frist
+        while not bedingung():
+            self.assertLess(time.monotonic(), ende, "Bedingung trat nicht ein")
+            time.sleep(0.01)
+
+    def test_haelt_die_sperre_waehrend_der_wiedergabe(self):
+        auftrag = self._auftrag()
+        self.dienst._sprechen(None, auftrag, None, "", None)
+        self.assertNotEqual(self.gespielt, [])
+        # Ein Wort statt einer PID: Das Stoppwort schickt SIGTERM an die PID dort
+        self.assertEqual(self.beim_spielen[0].split()[0], self.s.SPERRE_HALTER)
+        self.assertEqual(self.beim_spielen[1], "belegt")
+        self.assertFalse(self._belegt())
+        self.assertFalse(auftrag.ergebnis["abgebrochen"])
+
+    def test_wartet_bis_der_andere_player_fertig_ist(self):
+        halter = self._halten(f"4242 {int(time.time())}")
+        auftrag = self._auftrag()
+        with self.assertLogs("sprechdienst", "INFO") as protokoll:
+            faden = self._im_hintergrund(auftrag)
+            self._warten_bis(lambda: auftrag.wartet)
+            time.sleep(0.1)
+            self.assertEqual(self.gespielt, [])
+            # Ein Stoppwort trifft, was klingt, nicht die wartende Antwort
+            self.assertEqual(self.dienst._stoppen("sitzung-b", sonst_aktuell=True), "nichts")
+            self.assertFalse(auftrag.vorbei(self.dienst.runde))
+            halter.close()
+            faden.join(timeout=5)
+        self.assertFalse(faden.is_alive())
+        self.assertNotEqual(self.gespielt, [])
+        self.assertFalse(auftrag.wartet)
+        self.assertTrue(any("auf die Sperre des Players gewartet" in z for z in protokoll.output))
+
+    def test_stopp_beendet_das_warten(self):
+        self._halten(f"4242 {int(time.time())}")
+        auftrag = self._auftrag()
+        faden = self._im_hintergrund(auftrag)
+        self._warten_bis(lambda: auftrag.wartet)
+        self.assertEqual(self.dienst._stoppen("sitzung-a"), "eigene")
+        faden.join(timeout=5)
+        self.assertFalse(faden.is_alive())
+        self.assertEqual(self.gespielt, [])
+        self.assertTrue(auftrag.ergebnis["abgebrochen"])
+
+    def test_haengender_halter_wird_beendet(self):
+        # Ein Player, dessen Verbindung abriss: hält die Sperre, seit über SPERRE_ALTER
+        code = ("import fcntl, sys, time\n"
+                "f = open(sys.argv[1], 'a+')\n"
+                "fcntl.flock(f, fcntl.LOCK_EX)\n"
+                "f.seek(0); f.truncate(); f.write('%d 1700000000' % __import__('os').getpid())\n"
+                "f.flush(); print('bereit', flush=True); time.sleep(30)\n")
+        haengend = subprocess.Popen([sys.executable, "-c", code, str(self.sperre)],
+                                    stdout=subprocess.PIPE, text=True)
+        self.addCleanup(haengend.stdout.close)
+        self.addCleanup(haengend.kill)
+        self.assertEqual(haengend.stdout.readline().strip(), "bereit")
+        auftrag = self._auftrag()
+        self.dienst._sprechen(None, auftrag, None, "", None)
+        self.assertEqual(haengend.wait(timeout=5), -15)
+        self.assertNotEqual(self.gespielt, [])
+
+    def test_der_dienst_als_halter_wird_nie_beendet(self):
+        # Ein altes Wort in der Datei: int() scheitert, kein Signal an irgendwen
+        halter = self._halten(f"{self.s.SPERRE_HALTER} 1700000000")
+        auftrag = self._auftrag()
+        with unittest.mock.patch.object(self.s.os, "kill") as kill:
+            faden = self._im_hintergrund(auftrag)
+            self._warten_bis(lambda: auftrag.wartet)
+            time.sleep(0.1)
+            halter.close()
+            faden.join(timeout=5)
+        kill.assert_not_called()
+        self.assertNotEqual(self.gespielt, [])
+
+    def test_geliefert_wird_ohne_sperre(self):
+        # Den gelieferten Ton spielt ein Player unter der Sperre, nicht der Dienst
+        self._halten()
+        auftrag = self._auftrag(ziel=self.dienst_seite)
+        empfangen: list[bytes] = []
+
+        def lesen():
+            while teil := self.aufrufer.recv(65536):
+                empfangen.append(teil)
+
+        leser = threading.Thread(target=lesen, daemon=True)
+        leser.start()
+        self.dienst._sprechen(None, auftrag, None, "", None)
+        self.dienst_seite.shutdown(2)
+        leser.join(timeout=5)
+        self.assertFalse(auftrag.ergebnis["abgebrochen"])
+        self.assertGreater(len(b"".join(empfangen)), 0)
+
+    def test_ohne_sperrdatei_wie_bisher(self):
+        (self.ordner / "datei").write_text("", encoding="utf-8")
+        with unittest.mock.patch.object(self.s, "LETZTE_PCM", self.ordner / "datei" / "l.pcm"), \
+                self.assertLogs("sprechdienst", "WARNING"):
+            auftrag = self._auftrag()
+            self.dienst._sprechen(None, auftrag, None, "", None)
+        self.assertNotEqual(self.gespielt, [])
+        self.assertFalse(auftrag.ergebnis["abgebrochen"])
+
+
+@unittest.skipUnless(ABHAENGIG, "numpy und soundfile fehlen")
 class SprecherUebersteht(unittest.TestCase):
     """Ein Fehler in einem Auftrag (etwa kein Ausgabegeraet) darf den Sprecher-Thread nicht
     beenden; der Dienst naehme sonst weiter Auftraege an, ohne je zu sprechen. MLX und

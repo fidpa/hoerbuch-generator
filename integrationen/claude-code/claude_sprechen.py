@@ -202,6 +202,9 @@ SPIELER_WAHL = (
 # Reißt die Verbindung ohne Abbau ab (Gerät schlief ein), wartet der Player ohne Ende auf
 # Ton, und sshd merkt es erst nach Stunden; ein Halter älter als SPERRE_ALTER gilt deshalb als
 # hängend und wird beendet. Ohne Sperrdatei spielt der Player ohne Sperre.
+# Der Sprechdienst nimmt dieselbe Sperre, solange er selbst abspielt (sprechdienst.py, SPERRE).
+# Statt einer PID steht dann ein Wort in der Datei: int() scheitert daran, und weder das Warten
+# hier noch STOPP_PY beenden den Dienst. Was er spielt, stoppt der Hook über dessen Socket.
 # Mit Sperre ist der Player ein Kind, und der Halter schreibt den Ton neben der Sperrdatei mit
 # (LETZTE_PCM, auch abgebrochen): „Nochmal“ spielt ihn auf dem Gerät, das ihn gespielt hat.
 # Liest der Halter eine Datei, ist das „Nochmal“, und er schreibt nicht mit: Ein Stopp
@@ -833,13 +836,14 @@ def stopp_geraete() -> list[str]:
 
 
 def fremd_stoppen(weitere: list[tuple[str, list[str]]] | None = None,
-                  ende: float | None = None) -> None:
+                  ende: float | None = None, hier: bool = True) -> None:
     """Stoppwort, während für die eigene Sitzung nichts läuft: beenden, was gerade klingt, also
     hier und auf jedem Gerät der Gerätewahl den Player, der die Sperre hält. Wartende bleiben.
     weitere sind Befehle (Ziel, Befehl), die gleichzeitig mit denen für die Geräte laufen; ende
-    ist der Zeitpunkt (time.monotonic), bis zu dem alle fertig sein müssen."""
+    ist der Zeitpunkt (time.monotonic), bis zu dem alle fertig sein müssen. Ohne hier bleibt
+    die Sperre auf diesem Gerät unberührt."""
     befehle = [(g, ["ssh", *SSH_OPTIONEN, g, FERN_STOPP]) for g in stopp_geraete() if g != HIER]
-    if player_sperre().is_file():
+    if hier and player_sperre().is_file():
         # Auch ohne "hier" in der Gerätewahl: Eine andere Sitzung oder ein anderer Rechner
         # kann hier spielen
         befehle.insert(0, (HIER, [sys.executable, "-c", STOPP_PY, str(player_sperre())]))
@@ -874,8 +878,12 @@ def ausgabe_stoppen(sitzung: str, quelle: list[str], entfernt: str,
         # Eine Frist für beides: Der Prompt-Hook hat zehn Sekunden. Der Dienst hier antwortet
         # sonst in einer Drittelsekunde, die Geräte bekommen den Rest
         ende = time.monotonic() + STOPP_TIMEOUT
-        if _stopp_hier([*quelle, "--sonst-aktuell"], STOPP_TIMEOUT / 2) != "eigene":
-            fremd_stoppen(ende=ende)
+        getroffen = _stopp_hier([*quelle, "--sonst-aktuell"], STOPP_TIMEOUT / 2)
+        if getroffen != "eigene":
+            # Spielte der Dienst („aktuell“), hielt er hier die Sperre, und wer sie nach dem
+            # Abbruch nimmt, wartete nur. Fehlt eine nutzbare Sperrdatei, spielt der Dienst ohne
+            # sie, und ein gleichzeitiger Player hier bliebe stehen; das steht in dessen Protokoll
+            fremd_stoppen(ende=ende, hier=getroffen != "aktuell")
         return
     if sonst:
         # Den Mac zugleich mit den Geräten: Nacheinander passte ein schlafendes Gerät samt
@@ -900,17 +908,22 @@ def taste_stopp() -> int:
     """Tastenkürzel: beenden, was auf diesem Gerät klingt. Das ist der Halter der Sperre
     (FERN_PLAYER, Fernbetrieb, „Nochmal“) und, wo der Dienst selbst spielt, dessen Auftrag.
     Wartende Antworten bleiben, wie beim Stoppwort ohne eigene Ausgabe."""
+    # Der Dienst zuerst, wie beim Stoppwort: Wartet seine Antwort auf die Sperre, gibt ein
+    # beendeter Halter sie frei, und ein Stopp danach träfe die wartende Antwort. Eine Quelle
+    # ohne Aufträge: So trifft --sonst-aktuell nur, was der Dienst selbst abspielt. Ohne .venv
+    # läuft hier kein Dienst (etwa ein Gerät, das nur abspielt)
+    getroffen = ""
+    if (sprechen_sh().parent / ".venv" / "bin" / "python").exists():
+        getroffen = _stopp_hier(["--quelle", TASTE_QUELLE, "--sonst-aktuell"], STOPP_TIMEOUT)
     sperre = player_sperre()
-    if sperre.exists():
+    # Spielte der Dienst, hielt er die Sperre; der nächste Halter darin wartete nur. Ohne
+    # nutzbare Sperrdatei spielt der Dienst ohne sie (Warnung in seinem Protokoll)
+    if sperre.exists() and getroffen != "aktuell":
         try:
             subprocess.run([sys.executable, "-c", STOPP_PY, str(sperre)], timeout=STOPP_TIMEOUT,
                            stdin=subprocess.DEVNULL, capture_output=True)
         except (OSError, subprocess.TimeoutExpired) as e:
             log.error("Sperre nicht prüfbar: %s", e)
-    # Eine Quelle ohne Aufträge: So trifft --sonst-aktuell nur, was der Dienst selbst abspielt.
-    # Ohne .venv läuft hier kein Dienst (etwa ein Gerät, das nur abspielt)
-    if (sprechen_sh().parent / ".venv" / "bin" / "python").exists():
-        _stopp_hier(["--quelle", TASTE_QUELLE, "--sonst-aktuell"], STOPP_TIMEOUT)
     return 0
 
 

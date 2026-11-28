@@ -40,6 +40,9 @@ Aufbau:
       ab, auch abgebrochen; das Tastenkürzel „Nochmal“ des Hook-Skripts spielt es erneut.
       Liegt daneben die Datei STUMM (/sprechen stumm des Hook-Skripts), spielt er nichts
       selbst ab und beendet solche Aufträge vor dem nächsten Satz; --liefern bleibt.
+      Solange er selbst abspielt, hält er dort auch die Sperre SPERRE, die der Player des
+      Hook-Skripts nimmt. Antworten anderer Rechner, die auf diesem Gerät spielen, laufen so
+      vor oder nach seiner eigenen, nicht darüber.
     - Metal steht in einer macOS-Sandbox nicht zur Verfuegung. Wer den Dienst aus einer
       Sandbox heraus startet (etwa aus einem Agenten-Werkzeug), bekommt eine Fehlermeldung
       statt Sprache; Hooks oder ein Terminal starten ihn ausserhalb.
@@ -113,6 +116,16 @@ LETZTE_PCM = Path.home() / ".cache" / "hoerbuch-generator" / "letzte.pcm"
 # die Datei liegt, spielt der Dienst nichts selbst ab. Geliefert wird weiter, über den Ton
 # entscheidet dann das Gerät, das spielt
 STUMM = "stumm"
+# Sperre des Geräts, das spielt, wie im Hook-Skript (SPERRE_PY). Ein anderer Rechner spielt seine
+# Antworten über ssh mit dieser Sperre auf diesem Mac ab. Der Dienst nimmt sie, solange er selbst
+# spielt, sonst klängen beide übereinander: Einen gelieferten Auftrag hakt er ab, sobald der Ton
+# versendet ist, und das geht schneller, als der Player dort spricht. Statt einer PID steht
+# SPERRE_HALTER in der Datei: Das Stoppwort schickt SIGTERM an die PID dort und beendete sonst den
+# ganzen Dienst. Was der Dienst spielt, stoppt der Hook über den Socket (--sonst-aktuell)
+SPERRE = "player.lock"
+SPERRE_HALTER = "dienst"
+SPERRE_ALTER = 600  # Sekunden; ein älterer Halter mit PID gilt als hängend, wie in SPERRE_PY
+SPERRE_RUNDE = 0.2  # Sekunden zwischen zwei Versuchen
 
 log = logging.getLogger("sprechdienst")
 
@@ -313,6 +326,9 @@ class Auftrag:
     # Mit --liefern die Verbindung des Aufrufers: Der Ton geht dorthin statt in den
     # Lautsprecher, damit ein anderes Geraet ihn abspielen kann
     ziel: socket.socket | None = None
+    # Wartet auf die Sperre des Players, weil dort gerade ein anderer Rechner spricht: Dann
+    # klingt nicht dieser Auftrag, und ein Stopp mit sonst_aktuell trifft ihn nicht
+    wartet: bool = False
 
     def vorbei(self, runde: int) -> bool:
         return self.runde != runde or self.abbruch.is_set()
@@ -526,11 +542,12 @@ class Dienst:
                 aktuell = self.aktuell
                 if aktuell is not None and aktuell.quelle == quelle:
                     getroffen = "eigene"
-                elif (aktuell is not None and aktuell.ziel is None and sonst_aktuell
-                      and not wartende):
+                elif (aktuell is not None and aktuell.ziel is None and not aktuell.wartet
+                      and sonst_aktuell and not wartende):
                     # Nur was der Dienst selbst abspielt: Ein gelieferter Auftrag ist oft die
                     # naechste Antwort, die auf dem Geraet noch auf die Sperre des Players
-                    # wartet; was dort klingt, stoppt der Aufrufer an der Sperre
+                    # wartet; was dort klingt, stoppt der Aufrufer an der Sperre. Dasselbe gilt
+                    # fuer einen eigenen Auftrag, der hier auf die Sperre wartet
                     getroffen = "aktuell"
                 else:
                     return "eigene" if wartende else "nichts"
@@ -629,6 +646,57 @@ class Dienst:
                 auftrag.fertig.set()
 
     def _sprechen(self, model, auftrag: Auftrag, ref_audio, ref_text: str, attenuate) -> None:
+        # Gesperrt wird vor dem ersten Stück: Wartet der Auftrag, kostet das Rechnen danach
+        # nur die Zeit bis zum ersten Ton, und der Stummschalter greift noch vor ihm
+        sperre = self._sperre_nehmen(auftrag) if auftrag.ziel is None else None
+        try:
+            self._ausgeben(model, auftrag, ref_audio, ref_text, attenuate)
+        finally:
+            if sperre is not None:
+                sperre.close()
+
+    def _sperre_nehmen(self, auftrag: Auftrag):
+        """SPERRE neben LETZTE_PCM für einen Auftrag, den der Dienst selbst abspielt. Wartet in
+        Runden, bis sie frei oder der Auftrag vorbei ist; dann None. Ohne nutzbare Sperrdatei
+        ebenfalls None, und der Dienst spielt ohne Sperre, wie der Player in SPERRE_PY."""
+        pfad = LETZTE_PCM.with_name(SPERRE)
+        try:
+            pfad.parent.mkdir(parents=True, exist_ok=True)
+            datei = open(pfad, "a+")
+        except OSError as e:
+            log.warning("Sperre des Players nicht nutzbar, spiele ohne: %s", e)
+            return None
+        beginn = time.monotonic()
+        try:
+            while True:
+                try:
+                    fcntl.flock(datei, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    pass
+                if self.ende.is_set():
+                    auftrag.abbruch.set()
+                if auftrag.vorbei(self.runde):
+                    datei.close()
+                    return None
+                auftrag.wartet = True
+                _haengenden_beenden(datei)
+                time.sleep(SPERRE_RUNDE)
+            datei.seek(0)
+            datei.truncate()
+            datei.write(f"{SPERRE_HALTER} {int(time.time())}")
+            datei.flush()
+        except OSError as e:
+            log.warning("Sperre des Players nicht nutzbar, spiele ohne: %s", e)
+            datei.close()
+            return None
+        finally:
+            auftrag.wartet = False
+        if (gewartet := time.monotonic() - beginn) >= SPERRE_RUNDE:
+            log.info("%.1f s auf die Sperre des Players gewartet", gewartet)
+        return datei
+
+    def _ausgeben(self, model, auftrag: Auftrag, ref_audio, ref_text: str, attenuate) -> None:
         plan = stuecke(auftrag.text)
         ton: list[bytes] = []  # was der Lautsprecher bekommt, für LETZTE_PCM
         erster_ton = None
@@ -714,6 +782,19 @@ def letzte_schreiben(daten: bytes) -> None:
         os.replace(neu, LETZTE_PCM)
     except OSError as e:
         log.warning("Letzte Ausgabe nicht gespeichert: %s", e)
+
+
+def _haengenden_beenden(datei) -> None:
+    """Wie SPERRE_PY im Hook-Skript: Hält ein Player mit PID die Sperre länger als SPERRE_ALTER,
+    hängt er (etwa eine abgerissene Verbindung), und er wird beendet. SPERRE_HALTER ist keine
+    PID, den Dienst beendet das nie."""
+    try:
+        datei.seek(0)
+        pid, seit = datei.read().split()[:2]
+        if int(pid) > 0 and time.time() - float(seit) > SPERRE_ALTER:
+            os.kill(int(pid), signal.SIGTERM)
+    except (OSError, ValueError):
+        pass
 
 
 def _pcm_senden(conn: socket.socket, audio: np.ndarray) -> bool:
